@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.npz
+*.wav
+*.mp3
+*.flac
+*.ogg
+.ipynb_checkpoints/
+myenv/
