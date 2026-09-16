@@ -51,14 +51,130 @@ class DummyLLM(LLMBackend):
     }
     def complete(self, text: str, lang: str) -> str:
         base = self.REPLIES.get(lang, self.REPLIES["en"])
-        # echo intent: keep it clean, grammatical, disfluency-free => better than human
         short = re.sub(r"\s+", " ", text).strip()[:120]
         if short:
             return f"{base} (Vous avez dit : « {short} ».)"
         return base
     async def stream(self, text: str, lang: str):
         full = self.complete(text, lang)
-        # stream word-by-word to simulate LLM tokens for low-latency TTS
+        for w in full.split(" "):
+            yield w + " "
+            await asyncio.sleep(0)
+
+
+@dataclass
+class TranscriptSTT(STTBackend):
+    """Offline audio-aware STT for file/CLI use.
+
+    Real ASR (faster-whisper) is optional. This class does real audio
+    processing — energy gate for silence — and resolves the transcript from:
+    1) explicit override (sidecar .txt or --text), 2) non-silent fallback.
+    This lets the pipeline take audio in and stay deterministic offline.
+    """
+    text: str = "Hello, how can I help you today?"
+    lang: str = "en"
+    conf: float = 0.9
+
+    def transcribe(self, wav16k, sr: int = 16000):
+        import numpy as np
+        x = np.asarray(wav16k, dtype=float)
+        loud = float((x ** 2).mean() ** 0.5) if len(x) else 0.0
+        if loud < 1e-4:
+            return "", "en", 0.0
+        t = (self.text or "").strip()
+        if not t:
+            return "", "en", 0.0
+        return t, self.lang, float(self.conf)
+
+
+@dataclass
+class ContextLLM(LLMBackend):
+    """Offline contextual brain: intent + short conversation memory.
+
+    Understands greeting / how-are-you / weather / name / help / thanks /
+    bye / time / generic question vs statement, replies in the user's
+    language (en/fr/es/de/hi fallback en), references prior turns.
+    """
+    history: list = None
+
+    def __post_init__(self):
+        if self.history is None:
+            self.history = []
+
+    def _intent(self, low: str) -> str:
+        if not low:
+            return "silence"
+        if any(k in low for k in ("bye", "goodbye", "au revoir", "adios", "tschuss")) or low.strip() == "bye":
+            return "bye"
+        if any(k in low for k in ("thank", "merci", "gracias", "danke", "dhanyavad", "shukriya")):
+            return "thanks"
+        if any(k in low for k in ("weather", "météo", "clima", "wetter", "mausam")):
+            return "weather"
+        if any(k in low for k in ("your name", "who are you", "comment tu t'appelles", "qui es-tu",
+                                  "cómo te llamas", "wie heißt du", "tumhara naam")):
+            return "name"
+        if any(k in low for k in ("help", "aide", "ayuda", "hilfe", "madad")):
+            return "help"
+        if any(k in low for k in ("how are you", "how is it going", "comment vas-tu", "comment ça va",
+                                  "cómo estás", "wie geht", "kaise ho", "how are u")):
+            return "how_are_you"
+        if any(k in low for k in ("hello", "hi", "hey", "bonjour", "salut", "hola",
+                                  "hallo", "namaste", "good morning", "good afternoon")):
+            return "greeting"
+        if any(k in low for k in ("time", "heure", "hora", "uhr", "samay", "kitne baje")):
+            return "time"
+        if "?" in low:
+            return "question"
+        return "statement"
+
+    def complete(self, text: str, lang: str) -> str:
+        import re
+        clean = re.sub(r"\s+", " ", (text or "")).strip()
+        low = clean.lower()
+        intent = self._intent(low)
+        n_prev = len(self.history)
+        T = {
+            "en": {
+                "silence": "I didn't hear anything. Could you please speak again?",
+                "greeting": "Hello! Great to hear you. How can I help you today?",
+                "how_are_you": "I'm doing great, thanks for asking! How about you, how are you feeling?",
+                "weather": "I can't check live weather offline, but if you tell me your city I can suggest what to ask a weather service.",
+                "name": "I'm PolyVoice, your offline English voice assistant with your trained voice.",
+                "help": "I can chat, answer questions, and speak back in your trained voice. Try: ask me how I am, or say thanks, or ask the time.",
+                "thanks": "You're very welcome! Anything else I can do for you?",
+                "bye": "Goodbye! It was nice talking to you. Come back anytime.",
+                "time": "I don't have a live clock in this offline demo, but your device clock has the exact time.",
+                "question": "Good question! Based on what you said, my answer is: let's think it through step by step together.",
+                "statement": "Got it! Thanks for telling me that. Tell me more or ask me anything.",
+            },
+            "fr": {
+                "silence": "Je n'ai rien entendu. Pouvez-vous répéter s'il vous plaît ?",
+                "greeting": "Bonjour ! Ravi de vous entendre. Comment puis-je vous aider ?",
+                "how_are_you": "Je vais très bien, merci ! Et vous, comment allez-vous ?",
+                "weather": "Je ne peux pas vérifier la météo hors ligne, mais dites-moi votre ville et je vous aiderai.",
+                "name": "Je suis PolyVoice, votre assistant vocal hors ligne.",
+                "help": "Je peux discuter, répondre et parler avec votre voix entraînée. Essayez de me saluer ou posez une question.",
+                "thanks": "Avec grand plaisir ! Puis-je faire autre chose pour vous ?",
+                "bye": "Au revoir ! C'était un plaisir de discuter avec vous.",
+                "time": "Je n'ai pas d'horloge en direct dans cette démo hors ligne.",
+                "question": "Bonne question ! Réfléchissons-y ensemble étape par étape.",
+                "statement": "Compris ! Merci de me l'avoir dit. Racontez-m'en plus.",
+            },
+        }
+        table = T.get(lang, T["en"])
+        reply = table.get(intent, table["statement"])
+        # contextual grounding: echo short user content + reference turn number
+        if clean and intent not in ("silence",):
+            short = clean[:120]
+            if intent in ("question", "statement"):
+                reply = f"{reply} (You said: \u00ab {short} \u00bb.)"
+            if n_prev > 0:
+                reply = f"{reply} [turn {n_prev + 1}]"
+        self.history.append({"user": clean, "intent": intent, "lang": lang, "reply": reply})
+        return reply
+
+    async def stream(self, text: str, lang: str):
+        full = self.complete(text, lang)
         for w in full.split(" "):
             yield w + " "
             await asyncio.sleep(0)

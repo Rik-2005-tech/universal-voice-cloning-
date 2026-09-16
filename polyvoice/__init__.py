@@ -1,7 +1,7 @@
 """PolyVoice — streaming audio-in / audio-out multilingual voice model."""
 from .pipeline import PolyVoicePipeline, PipelineConfig
 from .audio_io import normalize_loudness, denoise_spectral_gate, vad_energy
-from .backends import DummySTT, DummyLLM, DummyTTS, SuperhumanTTS
+from .backends import DummySTT, DummyLLM, DummyTTS, SuperhumanTTS, TranscriptSTT, ContextLLM
 from .universal import analyze_text, lang_embedding, synth_universal, adapt_to_lang, load_training_bank
 
 __all__ = [
@@ -14,6 +14,8 @@ __all__ = [
     "DummyLLM",
     "DummyTTS",
     "SuperhumanTTS",
+    "TranscriptSTT",
+    "ContextLLM",
     "analyze_text",
     "lang_embedding",
     "synth_universal",

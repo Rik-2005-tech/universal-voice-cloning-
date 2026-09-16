@@ -41,12 +41,72 @@ def synth_human_ref(text: str, sr=16000, seed=0) -> np.ndarray:
 
 
 DEMO_BANK_TEXTS = {
-    "en": ["Hello, how can I help you today?", "The weather is wonderful this morning."],
-    "fr": ["Bonjour, comment vas-tu?", "Je vais très bien, merci beaucoup."],
-    "es": ["Hola, ¿cómo puedo ayudarte?", "El clima está maravilloso hoy."],
-    "hi": ["Namaste, main aapki kaise madad kar sakta hun?", "Mausam aaj bahut achha hai."],
-    "zh": ["你好，你今天怎么样？", "今天天气非常好。"],
-    "ar": ["مرحبا، كيف حالك اليوم؟", "الطقس جميل جدا هذا الصباح."],
+    # Expanded any-situation bank: greeting / small-talk / question / help /
+    # thanks / bye / time / weather / happy / empathetic / long-form / short.
+    "en": [
+        "Hello, how can I help you today?",
+        "The weather is wonderful this morning.",
+        "Good morning, welcome to the voice cloning demo.",
+        "How are you doing this beautiful afternoon?",
+        "What is your name and how can you help me?",
+        "Thank you very much, goodbye!",
+        "Could you please speak slowly and clearly?",
+        "I am so happy to hear the great news today!",
+        "I am sorry you feel sad, take your time.",
+        "What time is it right now, please?",
+        "The quick brown fox jumps over the lazy dog.",
+        "Streaming synthesis must start in under half a second.",
+    ],
+    "fr": [
+        "Bonjour, comment vas-tu?",
+        "Je vais très bien, merci beaucoup.",
+        "Quel temps fait-il aujourd'hui s'il vous plaît?",
+        "Comment puis-je vous aider ce matin?",
+        "Merci beaucoup, au revoir!",
+        "Parlez lentement et clairement s'il vous plaît.",
+        "Je suis très heureux d'apprendre cette bonne nouvelle!",
+        "Je suis désolé, prenez votre temps.",
+    ],
+    "es": [
+        "Hola, ¿cómo puedo ayudarte?",
+        "El clima está maravilloso hoy.",
+        "¿Cómo estás esta hermosa tarde?",
+        "¿Cuál es tu nombre y cómo puedes ayudarme?",
+        "Muchas gracias, ¡adiós!",
+        "Habla despacio y con claridad, por favor.",
+        "¡Estoy muy feliz de escuchar esta gran noticia!",
+        "Lo siento mucho, tómate tu tiempo.",
+    ],
+    "hi": [
+        "Namaste, main aapki kaise madad kar sakta hun?",
+        "Mausam aaj bahut achha hai.",
+        "Aap kaise hain aaj dopahar?",
+        "Aapka naam kya hai?",
+        "Bahut bahut dhanyavad, alvida!",
+        "Kripya dheere aur spasht bolein.",
+        "Yeh khabar sunkar main bahut khush hun!",
+        "Mujhe khed hai, apna samay lein.",
+    ],
+    "zh": [
+        "你好，你今天怎么样？",
+        "今天天气非常好。",
+        "请问你叫什么名字？",
+        "请慢慢说，清楚一点。",
+        "非常感谢，再见！",
+        "听到这个好消息我非常高兴！",
+        "很抱歉，请慢慢来。",
+        "现在几点钟了？",
+    ],
+    "ar": [
+        "مرحبا، كيف حالك اليوم؟",
+        "الطقس جميل جدا هذا الصباح.",
+        "ما اسمك وكيف يمكنك مساعدتي؟",
+        "تكلم ببطء وبوضوح من فضلك.",
+        "شكرا جزيلا، وداعا!",
+        "أنا سعيد جدا لسماع هذه الأخبار!",
+        "أنا آسف، خذ وقتك.",
+        "كم الساعة الآن من فضلك؟",
+    ],
 }
 
 
