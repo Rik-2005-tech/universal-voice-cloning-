@@ -1,10 +1,15 @@
-# Core: numpy + soundfile for offline. Real-time extras are optional.
+# Core (always needed)
 numpy>=1.24
 soundfile>=0.12
-# --- real backends (install as needed) ---
-# faster-whisper>=1.0  # streaming multilingual ASR + LID
-# edge-tts>=0.14       # 100+ langs streaming TTS, superhuman clarity
+# --- real talking voices (offline neural TTS, ~60MB per voice) ---
+piper-tts>=1.2
+# --- automatic speech recognition + language ID (100 languages) ---
+faster-whisper>=1.0
+# --- real dataset fetching (FLEURS etc.) ---
+datasets>=2.14
+huggingface_hub>=0.20
+# --- optional extras ---
+# edge-tts>=0.14       # 100+ langs streaming TTS (cloud)
 # transformers>=4.40 torch>=2.2  # local LLM (Qwen2.5 / Llama-3.2)
-# fastapi>=0.110 uvicorn>=0.29  # streaming server
-# sounddevice>=0.4  # mic / speaker
-# webrtcvad>=2.0 or silero-vad  # robust VAD
+# fastapi>=0.110 uvicorn>=0.29   # streaming server
+# sounddevice>=0.4    # mic / speaker

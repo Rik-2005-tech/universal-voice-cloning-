@@ -267,27 +267,44 @@ def synth_universal(text: str, lang: str, p=None, sr: int = 24000) -> np.ndarray
     # pure 3-sine is too peaky (flatness 0.0); formants + aspiration -> ~0.14
     f0_med = float(np.median(f0t))
     wav = np.zeros(n, dtype=np.float64)
-    for k in range(1, 9):
+    for k in range(1, 17):
         fk = f0_med * k
         # formant boost (500/1500/2500 Hz like neutral vowel)
         w = (1.0 + 0.9 * np.exp(-((fk - 500) / 450) ** 2)
              + 0.7 * np.exp(-((fk - 1500) / 650) ** 2)
              + 0.45 * np.exp(-((fk - 2500) / 900) ** 2))
-        amp = (0.35 / (k ** 1.15)) * (0.55 + 0.9 * bright) * w / 2.2
+        # gentle decay keeps upper harmonics alive (muffled drone if too steep);
+        # upper octave (k>8) extra-tamed so brightness never turns to hiss
+        amp = (0.35 / (k ** 0.9)) * (0.55 + 0.9 * bright) * w / 1.8
+        if k > 8:
+            amp *= 0.5
         if k <= 3:
             wav = wav + amp * np.sin(k * phase)
         else:
             # higher harmonics slightly decorrelated (breathy, less peaky)
             wav = wav + amp * np.sin(k * phase + 0.4 * k)
     # shimmer: 2% natural amplitude wander (human, not machine-flat)
-    rng = np.random.default_rng(abs(hash(text)) % (2 ** 31))
+    # NOTE: stable hashlib seed — builtin hash() is salted per-process.
+    import hashlib as _hl
+    _seed = int.from_bytes(_hl.md5(text.encode()).digest()[:4], "little")
+    rng = np.random.default_rng(_seed)
     shimmer = 1.0 + 0.02 * np.sin(2 * np.pi * 7.0 * t + 0.5) + 0.008 * rng.standard_normal(n)
     wav = wav * shimmer
     # aspiration: faint lowpassed noise fills spectral valleys -> human flatness
     asp = rng.standard_normal(n).astype(np.float64)
     asp = (asp + np.concatenate([[0], asp[:-1]])) * 0.5  # soft lowpass
-    asp_level = 0.012 + 0.010 * bright  # ~-38..-34dB relative
+    asp_level = 0.016 + 0.012 * bright
     wav = wav + asp * asp_level
+    # consonant-like transients: short frication bursts at syllable onsets.
+    # Pure vowel hum with zero consonants reads as alien signal; these bursts
+    # restore high-frequency texture like human fricatives (subtle, ~-24dB).
+    ns = max(1, min(int(info["n_syll"]), 40))
+    grid = np.linspace(0.05, 0.95, ns) * n + rng.uniform(-0.02, 0.02, ns) * n
+    blen = max(8, int(sr * 0.02))
+    benv = np.hanning(blen)
+    for c in np.clip(grid.astype(int), 0, max(0, n - blen)):
+        burst = rng.standard_normal(blen).astype(np.float64) * benv * 0.03
+        wav[c:c + blen] += burst
     wav = wav.astype(np.float32)
 
     # rhythm envelope
@@ -316,34 +333,50 @@ def adapt_to_lang(target: str, bank: dict, glob=None) -> object:
 
     Exact match -> trained adapter. Else cosine-weighted blend of k-nearest
     trained langs in embedding space + global fallback. Never raises.
+    A pitch guard pulls f0 halfway to the language-family prior and clips
+    to human speech range, so drifted checkpoints can't turn demonic.
+    Always returns a copy (callers may mutate safely).
     """
+    import copy as _c
+    import numpy as _np
     from .train_superhuman import VoiceParams
     t = normalize_lang(target)
     if t in bank:
-        return bank[t]
-    if not bank:
-        return glob or VoiceParams()
-    te = lang_embedding(t)
-    langs = [l for l in bank if l != "und"]
-    if not langs:
-        return bank.get("und", glob or VoiceParams())
-    sims = []
-    for l in langs:
-        e = lang_embedding(l)
-        s = float(te @ e / (np.linalg.norm(te) * np.linalg.norm(e) + 1e-9))
-        sims.append((s, l))
-    sims.sort(reverse=True)
-    top = sims[:3]
-    w = np.array([max(0.0, s + 1.0) for s, _ in top])  # shift cosine to positive
-    if w.sum() < 1e-9:
-        return bank.get("und", glob or VoiceParams())
-    w /= w.sum()
-    mat = np.stack([bank[l].vector() for _, l in top])
-    v = (w[:, None] * mat).sum(axis=0)
-    # blend toward global so far-out langs stay stable (70% neighbor, 30% global)
-    g = (glob or bank.get("und") or VoiceParams()).vector()
-    v = 0.7 * v + 0.3 * g
-    return VoiceParams.from_vector(v)
+        base = bank[t]
+    elif not bank:
+        base = glob or VoiceParams()
+    else:
+        te = lang_embedding(t)
+        langs = [l for l in bank if l != "und"]
+        if not langs:
+            base = bank.get("und", glob or VoiceParams())
+        else:
+            sims = []
+            for l in langs:
+                e = lang_embedding(l)
+                s = float(te @ e / (_np.linalg.norm(te) * _np.linalg.norm(e) + 1e-9))
+                sims.append((s, l))
+            sims.sort(reverse=True)
+            top = sims[:3]
+            w = _np.array([max(0.0, s + 1.0) for s, _ in top])  # shift cosine to positive
+            if w.sum() < 1e-9:
+                base = bank.get("und", glob or VoiceParams())
+            else:
+                w /= w.sum()
+                mat = _np.stack([bank[l].vector() for _, l in top])
+                v = (w[:, None] * mat).sum(axis=0)
+                # blend toward global so far-out langs stay stable (70/30)
+                g = (glob or bank.get("und") or VoiceParams()).vector()
+                v = 0.7 * v + 0.3 * g
+                base = VoiceParams.from_vector(v)
+    p = _c.copy(base)
+    try:
+        # lean on the language-family prior (65%) so drifted checkpoints
+        # return to natural pitch; hard-clip to human speech range.
+        p.f0 = float(_np.clip(0.35 * float(p.f0) + 0.65 * float(prior_for(t)["f0"]), 150.0, 210.0))
+    except Exception:
+        pass
+    return p
 
 
 def prosody_for_lang(emotion: str, lang: str) -> dict:
@@ -395,7 +428,7 @@ def load_training_bank(data_dir: str, sr: int = 16000,
             if f != sr:  # linear resample
                 dur = len(x) / float(f)
                 n_out = max(1, int(round(dur * sr)))
-                x = np.interp(np.linspace(0, 1, len(x)), np.linspace(0, 1, n_out), x).astype(np.float32)
+                x = np.interp(np.linspace(0, 1, n_out), np.linspace(0, 1, len(x)), x).astype(np.float32)
             # universal input hygiene: mono 16k + loudness norm (superhuman consistency)
             try:
                 from .audio_io import normalize_loudness

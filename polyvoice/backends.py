@@ -88,6 +88,38 @@ class TranscriptSTT(STTBackend):
 
 
 @dataclass
+class AcousticSTT(STTBackend):
+    """True raw-audio path: analyses the waveform itself, no hint needed.
+
+    Uses polyvoice.audio_understand to describe WHAT was heard
+    (speech duration, question-like rise, energy, tempo) as a descriptor
+    string the ContextLLM answers. Any language, numpy-only, offline.
+    `descriptor` may carry a precomputed raw-audio analysis (better than
+    re-analysing post-denoise audio inside the pipeline).
+    """
+    lang: str = "en"
+    conf: float = 0.55
+    descriptor: str = ""
+
+    def transcribe(self, wav16k, sr: int = 16000):
+        import numpy as np
+        x = np.asarray(wav16k, dtype=float)
+        loud = float((x ** 2).mean() ** 0.5) if len(x) else 0.0
+        if loud < 1e-4:
+            return "", "en", 0.0
+        if self.descriptor:
+            return self.descriptor, self.lang, float(self.conf)
+        try:
+            from .audio_understand import analyze_audio
+            info = analyze_audio(wav16k, sr)
+        except Exception:
+            info = {"speech": False, "descriptor": "[silence]"}
+        if not info.get("speech"):
+            return "", "en", 0.0
+        return info["descriptor"], self.lang, float(self.conf)
+
+
+@dataclass
 class ContextLLM(LLMBackend):
     """Offline contextual brain: intent + short conversation memory.
 
@@ -104,24 +136,35 @@ class ContextLLM(LLMBackend):
     def _intent(self, low: str) -> str:
         if not low:
             return "silence"
-        if any(k in low for k in ("bye", "goodbye", "au revoir", "adios", "tschuss")) or low.strip() == "bye":
+        if low.startswith("[silence"):
+            return "silence"
+        if low.startswith("[speech"):
+            # acoustic descriptor: question-like rise -> heard_question else heard_statement
+            if "question=yes" in low:
+                return "heard_question"
+            return "heard_statement"
+        if any(k in low for k in ("bye", "goodbye", "au revoir", "adios", "tschuss", "alvida", "biday", "अलविदा", "বিদায়")) or low.strip() == "bye":
             return "bye"
-        if any(k in low for k in ("thank", "merci", "gracias", "danke", "dhanyavad", "shukriya")):
+        if any(k in low for k in ("thank", "merci", "gracias", "danke", "dhanyavad", "dhonnobad", "shukriya", "shukria", "धन्यवाद", "ধন্যবাদ")):
             return "thanks"
-        if any(k in low for k in ("weather", "météo", "clima", "wetter", "mausam")):
+        if any(k in low for k in ("weather", "météo", "clima", "wetter", "mausam", "abohawa", "मौसम", "আবহাওয়া")):
             return "weather"
         if any(k in low for k in ("your name", "who are you", "comment tu t'appelles", "qui es-tu",
-                                  "cómo te llamas", "wie heißt du", "tumhara naam")):
+                                  "cómo te llamas", "wie heißt du", "tumhara naam", "aapka naam",
+                                  "tumar nam", "tumi ke", "aapka naam kya", "नाम क्या", "নাম কী")):
             return "name"
-        if any(k in low for k in ("help", "aide", "ayuda", "hilfe", "madad")):
+        if any(k in low for k in ("help", "aide", "ayuda", "hilfe", "madad", "sahajjo", "sahayata", "मदद", "सहायता", "সাহায্য")):
             return "help"
         if any(k in low for k in ("how are you", "how is it going", "comment vas-tu", "comment ça va",
-                                  "cómo estás", "wie geht", "kaise ho", "how are u")):
+                                  "cómo estás", "wie geht", "kaise ho", "how are u",
+                                  "kemon acho", "kemon achen", "aap kaise",
+                                  "कैसे हैं", "कैसे हो", "কেমন আছেন", "কেমন আছো")):
             return "how_are_you"
         if any(k in low for k in ("hello", "hi", "hey", "bonjour", "salut", "hola",
-                                  "hallo", "namaste", "good morning", "good afternoon")):
+                                  "hallo", "namaste", "namaskar", "नमस्ते", "নমস্কার",
+                                  "good morning", "good afternoon")):
             return "greeting"
-        if any(k in low for k in ("time", "heure", "hora", "uhr", "samay", "kitne baje")):
+        if any(k in low for k in ("time", "heure", "hora", "uhr", "samay", "kitne baje", "somoy", "koyta", "समय", "সময়", "কয়টা")):
             return "time"
         if "?" in low:
             return "question"
@@ -146,6 +189,8 @@ class ContextLLM(LLMBackend):
                 "time": "I don't have a live clock in this offline demo, but your device clock has the exact time.",
                 "question": "Good question! Based on what you said, my answer is: let's think it through step by step together.",
                 "statement": "Got it! Thanks for telling me that. Tell me more or ask me anything.",
+                "heard_question": "I hear you asking something! I can't make out the exact words offline, but ask me again with a text hint and I'll answer fully.",
+                "heard_statement": "I hear you loud and clear! I can't make out the exact words offline — send the words as text and I'll reply in full.",
             },
             "fr": {
                 "silence": "Je n'ai rien entendu. Pouvez-vous répéter s'il vous plaît ?",
@@ -159,12 +204,90 @@ class ContextLLM(LLMBackend):
                 "time": "Je n'ai pas d'horloge en direct dans cette démo hors ligne.",
                 "question": "Bonne question ! Réfléchissons-y ensemble étape par étape.",
                 "statement": "Compris ! Merci de me l'avoir dit. Racontez-m'en plus.",
+                "heard_question": "Je vous entends poser une question ! Je ne distingue pas les mots exacts hors ligne — envoyez le texte et je répondrai.",
+                "heard_statement": "Je vous entends très bien ! Je ne distingue pas les mots exacts hors ligne — envoyez le texte et je répondrai.",
+            },
+            "es": {
+                "silence": "No escuché nada. ¿Puedes hablar de nuevo, por favor?",
+                "greeting": "¡Hola! Qué bueno escucharte. ¿Cómo puedo ayudarte hoy?",
+                "how_are_you": "¡Estoy muy bien, gracias! ¿Y tú, cómo estás?",
+                "weather": "No puedo ver el clima sin conexión, pero dime tu ciudad y te ayudo.",
+                "name": "Soy PolyVoice, tu asistente de voz sin conexión.",
+                "help": "Puedo charlar, responder y hablar con tu voz entrenada. Salúdame o haz una pregunta.",
+                "thanks": "¡Con mucho gusto! ¿Algo más en lo que pueda ayudar?",
+                "bye": "¡Adiós! Fue un placer hablar contigo.",
+                "time": "No tengo reloj en vivo en esta demo sin conexión.",
+                "question": "¡Buena pregunta! Pensémoslo juntos paso a paso.",
+                "statement": "¡Entendido! Gracias por contarme. Cuéntame más.",
+                "heard_question": "¡Te escucho preguntar algo! No distingo las palabras exactas sin conexión — envía el texto y responderé.",
+                "heard_statement": "¡Te escucho alto y claro! No distingo las palabras exactas sin conexión — envía el texto y responderé.",
+            },
+            "hi": {
+                "silence": "Maine kuch nahi suna. Kripya phir se bolein?",
+                "greeting": "Namaste! Aapko sunkar achha laga. Main aapki kaise madad kar sakta hun?",
+                "how_are_you": "Main bahut achha hun, dhanyavad! Aap kaise hain?",
+                "weather": "Main offline mausam nahi dekh sakta, apna sheher batayein.",
+                "name": "Main PolyVoice hun, aapka offline voice assistant.",
+                "help": "Main baat kar sakta hun, jawab de sakta hun. Namaste kahein ya sawal poochhein.",
+                "thanks": "Bahut khushi hui! Kya main aur kuch kar sakta hun?",
+                "bye": "Alvida! Aapse baat karke achha laga.",
+                "time": "Is offline demo mein live ghadi nahi hai.",
+                "question": "Achha sawal! Chaliye ise milkar suljhate hain.",
+                "statement": "Samajh gaya! Batane ke liye dhanyavad. Aur batayein.",
+                "heard_question": "Main sun raha hun ki aap kuch poochh rahe hain! Shabd saaf nahi hain — text bhejein, main jawab dunga.",
+                "heard_statement": "Main aapko sun raha hun! Shabd saaf nahi hain — text bhejein, main jawab dunga.",
+            },
+            "zh": {
+                "silence": "我什么都没听到，请再说一遍好吗？",
+                "greeting": "你好！很高兴听到你。今天我能帮你什么？",
+                "how_are_you": "我很好，谢谢！你怎么样？",
+                "weather": "离线时我看不到天气，请告诉我你的城市。",
+                "name": "我是PolyVoice，你的离线语音助手。",
+                "help": "我可以聊天、回答问题。请打招呼或提问。",
+                "thanks": "不客气！还有什么可以帮你吗？",
+                "bye": "再见！和你聊天很愉快。",
+                "time": "这个离线演示没有实时时钟。",
+                "question": "好问题！我们一起一步一步想想。",
+                "statement": "明白了！谢谢你告诉我。再多说一点吧。",
+                "heard_question": "我听到你在问问题！离线时听不清每个字——把文字发给我，我会完整回答。",
+                "heard_statement": "我清楚地听到你了！离线时听不清每个字——把文字发给我，我会完整回答。",
+            },
+            "ar": {
+                "silence": "لم أسمع شيئا. هل يمكنك التحدث مرة أخرى؟",
+                "greeting": "مرحبا! سعيد بسماعك. كيف يمكنني مساعدتك اليوم؟",
+                "how_are_you": "أنا بخير جدا، شكرا! وكيف حالك؟",
+                "weather": "لا أستطيع رؤية الطقس دون اتصال، أخبرني بمدينتك.",
+                "name": "أنا PolyVoice، مساعدك الصوتي دون اتصال.",
+                "help": "يمكنني الدردشة والإجابة. حيّني أو اطرح سؤالا.",
+                "thanks": "على الرحب والسعة! هل يمكنني فعل شيء آخر؟",
+                "bye": "وداعا! سعدت بالحديث معك.",
+                "time": "لا توجد ساعة مباشرة في هذه النسخة دون اتصال.",
+                "question": "سؤال جيد! لنفكر فيه معا خطوة بخطوة.",
+                "statement": "فهمت! شكرا لإخباري. حدثني أكثر.",
+                "heard_question": "أسمعك تطرح سؤالا! لا أميز الكلمات بدقة دون اتصال — أرسل النص وسأجيب بالكامل.",
+                "heard_statement": "أسمعك بوضوح! لا أميز الكلمات بدقة دون اتصال — أرسل النص وسأجيب بالكامل.",
+            },
+            "bn": {
+                "silence": "আমি কিছু শুনতে পাইনি। দয়া করে আবার বলুন?",
+                "greeting": "নমস্কার! আপনাকে শুনে ভালো লাগলো। আজ আমি কীভাবে সাহায্য করতে পারি?",
+                "how_are_you": "আমি খুব ভালো আছি, ধন্যবাদ! আপনি কেমন আছেন?",
+                "weather": "অফলাইনে আমি আবহাওয়া দেখতে পাই না, আপনার শহরের নাম বলুন।",
+                "name": "আমি PolyVoice, আপনার অফলাইন ভয়েস সহকারী।",
+                "help": "আমি কথা বলতে পারি, উত্তর দিতে পারি। নমস্কার বলুন বা প্রশ্ন করুন।",
+                "thanks": "অনেক স্বাগত! আর কিছু করতে পারি কি?",
+                "bye": "বিদায়! আপনার সাথে কথা বলে ভালো লাগলো।",
+                "time": "এই অফলাইন ডেমোতে লাইভ ঘড়ি নেই।",
+                "question": "ভালো প্রশ্ন! চলুন একসাথে ধাপে ধাপে ভাবি।",
+                "statement": "বুঝেছি! জানানোর জন্য ধন্যবাদ। আরও বলুন।",
+                "heard_question": "শুনছি আপনি কিছু জিজ্ঞেস করছেন! অফলাইনে প্রতিটি শব্দ বুঝতে পারছি না — লিখে পাঠান, পুরো উত্তর দেব।",
+                "heard_statement": "আপনাকে স্পষ্ট শুনতে পাচ্ছি! অফলাইনে প্রতিটি শব্দ বুঝতে পারছি না — লিখে পাঠান, পুরো উত্তর দেব।",
             },
         }
         table = T.get(lang, T["en"])
         reply = table.get(intent, table["statement"])
         # contextual grounding: echo short user content + reference turn number
-        if clean and intent not in ("silence",):
+        # (skip echo for raw-audio descriptors and silence)
+        if clean and intent not in ("silence", "heard_question", "heard_statement"):
             short = clean[:120]
             if intent in ("question", "statement"):
                 reply = f"{reply} (You said: \u00ab {short} \u00bb.)"
@@ -202,7 +325,6 @@ class DummyTTS(TTSBackend):
 
 
 # ---------- trained superhuman voice (indistinguishable head) ----------
-
 @dataclass
 class SuperhumanTTS(TTSBackend):
     """Universal any-language voice: loads voice.npz (single) or bank.npz
@@ -211,6 +333,8 @@ class SuperhumanTTS(TTSBackend):
     language gets native rhythm/intonation + humanize texture."""
     ckpt: str | None = None
     sr: int = 24000
+    micro: str | None = None
+    _micro_bank: object = None
     def _bank(self):
         import numpy as np
         from .train_superhuman import VoiceParams, load_bank
@@ -230,19 +354,120 @@ class SuperhumanTTS(TTSBackend):
         # default lang handled per-synth; return global for compat
         return b.get("und", g)
     def synth(self, text: str, lang: str, style: dict | None = None):
-        from .universal import synth_universal, adapt_to_lang
+        import copy as _c
+        from .universal import synth_universal, adapt_to_lang, prior_for, normalize_lang
         from .humanize import humanize
-        bank, glob = self._bank()
-        p = adapt_to_lang(lang, bank, glob)
+        micro_res = None
+        if self.micro:
+            try:
+                from .timbre import load_micro_bank, apply_eq
+                if self._micro_bank is None:
+                    self._micro_bank = load_micro_bank(self.micro)
+                per, aux = self._micro_bank
+                bank, glob = per, aux.get("glob", None)
+                res = aux.get("res", {})
+                micro_res = res.get(normalize_lang(lang), res.get("und"))
+                _apply_eq = apply_eq
+            except Exception:
+                micro_res = None
+                bank, glob = self._bank()
+        else:
+            bank, glob = self._bank()
+        # adapt_to_lang returns a guarded copy (human pitch range)
+        p = _c.copy(adapt_to_lang(lang, bank, glob))
         if style and "rate" in style:
-            import copy as _c
-            p = _c.copy(p)
             p.rate = float(style["rate"])
         wav = synth_universal(text, lang, p, self.sr)
-        # language-family base f0 for jitter reference
-        from .universal import prior_for
         f0ref = prior_for(lang)["f0"]
-        return humanize(wav, self.sr, text, f0=f0ref), self.sr
+        wav = humanize(wav, self.sr, text, f0=f0ref)
+        if micro_res is not None:
+            try:
+                wav = _apply_eq(wav, self.sr, micro_res)
+            except Exception:
+                pass
+        return wav, self.sr
+
+
+@dataclass
+class PiperTTS(TTSBackend):
+    """Real talking voice: neural Piper TTS speaks intelligible words with a
+    human voice (offline, after one ~60MB download). English uses Piper;
+    other languages fall back to the trained SuperhumanTTS hum. If the model
+    file is missing, everything falls back gracefully (never crashes)."""
+    model: str = "voices/en-lessac-medium.onnx"
+    fallback_ckpt: str = "bank_large.npz"
+    sr: int = 22050
+    _v: object = None
+    _fb: object = None
+    _voices: object = None
+
+    VOICE_MAP = {
+        "en": "voices/en-lessac-medium.onnx",
+        "hi": "voices/hi-pratham-medium.onnx",
+        "bn": "voices/bn-google-medium.onnx",
+        "fr": "voices/fr-siwis-medium.onnx",
+        "es": "voices/es-davefx-medium.onnx",
+        "zh": "voices/zh-huayan-medium.onnx",
+        "ar": "voices/ar-kareem-medium.onnx",
+    }
+
+    def _load(self):
+        return self._load_voice(self.model)
+
+    def _load_voice(self, path: str):
+        if self._voices is None:
+            self._voices = {}
+        if path not in self._voices:
+            from piper import PiperVoice
+            import os as _os
+            if not _os.path.exists(path):
+                raise FileNotFoundError(f"piper voice missing: {path}")
+            self._voices[path] = PiperVoice.load(path)
+        v = self._voices[path]
+        try:
+            self.sr = int(v.config.sample_rate)
+        except Exception:
+            pass
+        return v
+
+    def synth(self, text: str, lang: str, style: dict | None = None):
+        try:
+            from .universal import normalize_lang
+        except Exception:
+            normalize_lang = lambda l: (l or "en")  # noqa
+        path = self.VOICE_MAP.get(normalize_lang(lang), self.model)
+        try:
+            v = self._load_voice(path)
+        except Exception:
+            if self._fb is None:
+                self._fb = SuperhumanTTS(ckpt=self.fallback_ckpt)
+            return self._fb.synth(text, lang, style)
+        import io
+        import wave
+        import numpy as _np
+        rate = 1.0
+        try:
+            rate = float((style or {}).get("rate", 1.0))
+        except Exception:
+            rate = 1.0
+        length_scale = float(_np.clip(1.0 / max(0.5, rate), 0.6, 1.5))
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(self.sr)
+            try:
+                from piper.config import SynthesisConfig
+                cfg = SynthesisConfig(length_scale=length_scale)
+            except Exception:
+                cfg = None
+            v.synthesize_wav(str(text), w, syn_config=cfg)
+        buf.seek(0)
+        with wave.open(buf, "rb") as r:
+            raw = r.readframes(r.getnframes())
+            out_sr = r.getframerate()
+        audio = (_np.frombuffer(raw, dtype=_np.int16).astype(_np.float32) / 32768.0)
+        return audio, out_sr
 
 
 # ---------- voice map for real TTS (edge-tts, 100+ langs) ----------

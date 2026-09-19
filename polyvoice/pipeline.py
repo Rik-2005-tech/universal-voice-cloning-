@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, field
 
 from .audio_io import to_mono_16k, normalize_loudness, denoise_spectral_gate, vad_energy
+from .preprocess import preprocess_audio
 from .backends import STTBackend, LLMBackend, TTSBackend, DummySTT, DummyLLM, DummyTTS
 
 
@@ -86,12 +87,12 @@ class PolyVoicePipeline:
     # ---- non-streaming one-shot (file in -> wav out) ----
     def run_utterance(self, wav, sr: int) -> dict:
         import numpy as np
-        x = to_mono_16k(np.asarray(wav), sr, 16000)
-        if self.cfg.enhance:
-            x = denoise_spectral_gate(x)
-            x = normalize_loudness(x)
-        segs = vad_energy(x)
-        active = np.concatenate([x[a:b] for a, b in segs]) if segs else x
+        # preprocess BEFORE the model: mono/resample/DC/gentle-denoise/norm/trim
+        clean, prep = preprocess_audio(np.asarray(wav), sr, 16000)
+        # STT gets the FULL preprocessed utterance: chopping/concatenating
+        # VAD fragments destroys sentence timing real recognizers need for LID.
+        # (Backends with their own VAD, e.g. faster-whisper vad_filter, handle it.)
+        active = clean
         text, lang, conf = self.stt.transcribe(active)
         text = clean_transcript(text)
         if self.cfg.force_lang:
@@ -110,17 +111,15 @@ class PolyVoicePipeline:
         else:
             out, sr_out = wavs, getattr(self.tts, "sr", 24000)
         return {"text": text, "lang": lang, "conf": conf, "reply": reply,
-                "emotion": emo, "style": style, "audio": out, "sr": sr_out}
+                "emotion": emo, "style": style, "audio": out, "sr": sr_out,
+                "clean": clean, "prep": prep}
 
     # ---- streaming: LLM tokens -> sentence TTS chunks ----
     async def stream_utterance(self, wav, sr: int):
         """Yields dicts: {type: asr|llm_tok|tts_chunk|done} for realtime UI."""
         import numpy as np
-        x = to_mono_16k(np.asarray(wav), sr, 16000)
-        if self.cfg.enhance:
-            x = denoise_spectral_gate(x)
-            x = normalize_loudness(x)
-        text, lang, conf = self.stt.transcribe(x)
+        clean, _prep = preprocess_audio(np.asarray(wav), sr, 16000)
+        text, lang, conf = self.stt.transcribe(clean)
         text = clean_transcript(text)
         if self.cfg.force_lang:
             lang = self.cfg.force_lang

@@ -19,8 +19,9 @@ import numpy as np
 
 
 def synth_human_ref(text: str, sr=16000, seed=0) -> np.ndarray:
-    """Human-like reference: formant resonances + shimmer + aspiration.
-    Matches universal synth timbre so smoke-training optimizes meaningfully."""
+    """Human-like reference: formant resonances + shimmer + aspiration +
+    consonant bursts. Matches universal synth timbre (16 harmonics, frication
+    texture) so smoke-training optimizes meaningfully."""
     rng = np.random.default_rng(seed)
     dur = max(0.5, len(text) / 13.0)
     n = int(sr * dur)
@@ -28,15 +29,25 @@ def synth_human_ref(text: str, sr=16000, seed=0) -> np.ndarray:
     f0 = 172 + 8 * np.sin(2 * np.pi * 0.9 * t) + rng.standard_normal(n) * 0.4
     phase = 2 * np.pi * np.cumsum(f0) / sr + 2.5 * np.sin(2 * np.pi * 5.2 * t)
     wav = np.zeros(n, dtype=np.float64)
-    for k in range(1, 7):
+    for k in range(1, 17):
         fk = 172 * k
         w = (1.0 + 0.9 * np.exp(-((fk - 500) / 450) ** 2)
              + 0.7 * np.exp(-((fk - 1500) / 650) ** 2))
-        wav = wav + (0.32 / (k ** 1.1)) * w / 1.8 * np.sin(k * phase + 0.3 * k)
+        amp = (0.32 / (k ** 0.9)) * w / 1.8
+        if k > 8:
+            amp *= 0.5
+        wav = wav + amp * np.sin(k * phase + 0.3 * k)
     wav = wav * (1.0 + 0.02 * np.sin(2 * np.pi * 7 * t))
     asp = rng.standard_normal(n)
     asp = (asp + np.concatenate([[0], asp[:-1]])) * 0.5
-    wav = wav + asp * 0.014
+    wav = wav + asp * 0.02
+    # consonant-like frication bursts per word (mirrors synth, subtle)
+    nw = max(1, min(len(text.split()), 30))
+    grid = np.linspace(0.05, 0.95, nw) * n + rng.uniform(-0.02, 0.02, nw) * n
+    blen = max(8, int(sr * 0.02))
+    benv = np.hanning(blen)
+    for c in np.clip(grid.astype(int), 0, max(0, n - blen)):
+        wav[c:c + blen] += rng.standard_normal(blen) * benv * 0.03
     return wav.astype(np.float32)
 
 
@@ -86,6 +97,10 @@ DEMO_BANK_TEXTS = {
         "Kripya dheere aur spasht bolein.",
         "Yeh khabar sunkar main bahut khush hun!",
         "Mujhe khed hai, apna samay lein.",
+        "नमस्ते! आप कैसे हैं?",
+        "आज मौसम बहुत अच्छा है।",
+        "आपका नाम क्या है?",
+        "बहुत-बहुत धन्यवाद, अलविदा!",
     ],
     "zh": [
         "你好，你今天怎么样？",
@@ -106,6 +121,16 @@ DEMO_BANK_TEXTS = {
         "أنا سعيد جدا لسماع هذه الأخبار!",
         "أنا آسف، خذ وقتك.",
         "كم الساعة الآن من فضلك؟",
+    ],
+    "bn": [
+        "নমস্কার! আপনি কেমন আছেন?",
+        "আজ আবহাওয়া খুব ভালো।",
+        "আপনার নাম কী?",
+        "অনেক অনেক ধন্যবাদ, বিদায়!",
+        "দয়া করে ধীরে এবং স্পষ্ট করে বলুন।",
+        "এই খবর শুনে আমি খুব খুশি!",
+        "দুঃখিত, আপনার সময় নিন।",
+        "এখন কয়টা বাজে?",
     ],
 }
 

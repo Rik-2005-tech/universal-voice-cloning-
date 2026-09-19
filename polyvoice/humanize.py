@@ -52,8 +52,8 @@ def f0_jitter(wav: np.ndarray, sr: int, f0: float = 185.0, depth: float = 0.006)
     idx = np.arange(n, dtype=np.float64) + mod
     idx = np.clip(idx, 0, n - 1)
     y = np.interp(idx, np.arange(n), x).astype(np.float32)
-    # mix 85% warped + 15% dry to keep transients, spectrum ~unchanged
-    return (0.85 * y + 0.15 * x).astype(np.float32)
+    # mix 90% warped + 10% dry to keep transients/highs, spectrum ~unchanged
+    return (0.9 * y + 0.1 * x).astype(np.float32)
 
 
 def natural_pauses(wav: np.ndarray, sr: int, text: str) -> np.ndarray:
@@ -79,7 +79,7 @@ def match_spectral_tilt(wav: np.ndarray, sr: int, tilt: float = 0.10) -> np.ndar
     freqs = np.fft.rfftfreq(len(x), 1 / sr)
     filt = np.exp(-freqs / (4000.0 / max(0.05, tilt * 4))).astype(np.float32)
     low = np.fft.irfft(S * filt, n=len(x)).astype(np.float32)
-    return (0.85 * x + 0.15 * low).astype(np.float32)
+    return (0.9 * x + 0.1 * low).astype(np.float32)
 
 
 def humanize(wav: np.ndarray, sr: int, text: str, f0: float = 185.0) -> np.ndarray:
