@@ -41,6 +41,8 @@ def main():
                     help="comma list to narrow AI voices, e.g. en,hi,bn (default: all)")
     ap.add_argument("--short-per-voice", type=int, default=15,
                     help="extra SHORT (1-4s) AI clips per voice (fixes short-clip blind spot)")
+    ap.add_argument("--harsh", action="store_true",
+                    help="extra 5-8dB street-noise copy on AI rows (anti-masking)")
     ap.add_argument("--out", default="detect.npz")
     a = ap.parse_args()
 
@@ -53,7 +55,7 @@ def main():
     rng = random.Random(0)
     X, y, D = [], [], []
 
-    def add_row(wav, sr, label, seed):
+    def add_row(wav, sr, label, seed, harsh=False):
         x = np.asarray(wav)
         X.append(extract_features(x, sr))
         y.append(label)
@@ -68,6 +70,12 @@ def main():
             X.append(extract_features(xa, sr))
             y.append(label)
             D.append(len(xa) / float(sr or 16000))
+        if harsh and label == 1:
+            from polyvoice.spoof import add_noise as _nz
+            xh = _nz(x, sr, snr_db=float(5 + (seed % 4)), seed=seed + 555)
+            X.append(extract_features(xh, sr))
+            y.append(label)
+            D.append(len(xh) / float(sr or 16000))
 
     # --- HUMAN: real speech clips ---
     for lang in ["hi", "en", "bn"]:
@@ -100,7 +108,7 @@ def main():
         for k, t in enumerate(lines[:a.ai_per_lang]):
             try:
                 x, sr = synth_piper(t[:160], model)
-                add_row(x, sr, 1, seed=1000 + k)
+                add_row(x, sr, 1, seed=1000 + k, harsh=a.harsh)
                 n_ai += 1
                 if n_ai % 10 == 0:
                     print(f"ai voice {lang}: {n_ai}", flush=True)
@@ -125,22 +133,20 @@ def main():
         for k, t in enumerate(pool[:a.short_per_voice]):
             try:
                 x, sr = synth_piper(t[:80], model)
-                add_row(x, sr, 1, seed=3000 + k)
+                add_row(x, sr, 1, seed=3000 + k, harsh=a.harsh)
                 n_short += 1
             except Exception as e:
                 print(f"piper-short skip {lang}: {str(e)[:60]}", flush=True)
         print(f"ai short {lang}: {n_short}", flush=True)
-    # --- AI: our own synth hum ---
+    # --- AI: our own synth hum (focused langs only) ---
     tts = SuperhumanTTS(ckpt="bank_large.npz")
     hum_texts = ["Hello, how are you today?", "नमस्ते, आप कैसे हैं?",
-                 "নমস্কার, আপনি কেমন আছেন?", "Bonjour, comment vas-tu?",
-                 "Hola, cómo estás hoy?", "你好，你今天怎么样?",
-                 "مرحبا، كيف حالك اليوم؟"]
-    hum_langs = ["en", "hi", "bn", "fr", "es", "zh", "ar"]
+                 "নমস্কার, আপনি কেমন আছেন?"]
+    hum_langs = ["en", "hi", "bn"]
     for i in range(a.hum_n):
         lang = hum_langs[i % len(hum_langs)]
         w, sr = tts.synth(hum_texts[i % len(hum_texts)] + f" ({i})", lang)
-        add_row(np.asarray(w), sr, 1, seed=2000 + i)
+        add_row(np.asarray(w), sr, 1, seed=2000 + i, harsh=a.harsh)
         if (i + 1) % 20 == 0:
             print(f"hums: {i + 1}/{a.hum_n}", flush=True)
     print(f"ai samples: {sum(y)}", flush=True)

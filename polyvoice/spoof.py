@@ -9,7 +9,8 @@ import numpy as np
 
 FEATURES = ["flat_med", "flat_std", "hf2k", "hf4k", "centroid", "rolloff",
             "zcr", "voiced_ratio", "jitter", "rms_dyn_db", "flux", "pauses",
-            "crest", "flat_high", "hf6k", "contrast"]
+            "crest", "flat_high", "hf6k", "contrast",
+            "gd_var", "hf_slope", "hf_burst"]
 
 
 FALLBACK_TEXTS = {
@@ -26,6 +27,26 @@ FALLBACK_TEXTS = {
     "zh": ["你好，你今天怎么样?", "今天天气非常好。", "非常感谢，再见！", "请问你叫什么名字?"],
     "ar": ["مرحبا، كيف حالك اليوم؟", "شكرا جزيلا، وداعا!",
            "الطقس جميل جدا هذا الصباح.", "إلى اللقاء، أتمنى لك يوما سعيدا."],
+}
+EXTRA_TEXTS = {
+    "es": ["Hola, cómo estás hoy?", "Muchas gracias, adiós!",
+           "El clima está maravilloso hoy.", "Hasta luego, que tengas buen día.",
+           "Buenos días, bienvenido a casa.", "Dónde está la estación de tren?",
+           "Necesito ayuda urgente, por favor.", "Me gusta mucho esta canción.",
+           "Qué hora es ahora mismo?", "Hablas muy claro, gracias.",
+           "Ayer llovió todo el día.", "Mañana será un día soleado.",
+           "Mi familia vive en un pueblo pequeño.", "El libro es muy interesante.",
+           "Por favor llama un taxi.", "La cena está lista, vamos.",
+           "Tengo una pregunta importante.", "Nos vemos pronto, cuídate."],
+    "ar": ["مرحبا، كيف حالك اليوم؟", "شكرا جزيلا، وداعا!",
+           "الطقس جميل جدا هذا الصباح.", "إلى اللقاء، أتمنى لك يوما سعيدا.",
+           "صباح الخير، أهلا بك.", "أين محطة القطار من فضلك؟",
+           "أحتاج إلى مساعدة عاجلة.", "أحب هذه الأغنية كثيرا.",
+           "كم الساعة الآن؟", "كلامك واضح جدا، شكرا.",
+           "أمطرت السماء طوال أمس.", "غدا سيكون يوما مشمسا.",
+           "عائلتي تعيش في قرية صغيرة.", "الكتاب ممتع جدا.",
+           "من فضلك اتصل بسيارة أجرة.", "العشاء جاهز، هيا بنا.",
+           "لدي سؤال مهم.", "أراك قريبا، اعتن بنفسك."],
 }
 
 
@@ -74,17 +95,33 @@ def extract_features(wav, sr: int = 16000) -> np.ndarray:
         crest = float(np.median(M.max(axis=1) / (M.mean(axis=1) + 1e-9)))
         hi = M[:, freqs > 4000]
         lhi = 20 * np.log10(hi + 1e-9)
-        flat_high = float(np.median(np.exp(lhi.mean(axis=1)) / hi.mean(axis=1)))
+        flat_high = float(np.median(np.exp(lhi.mean(axis=1)) / (hi.mean(axis=1) + 1e-9)))
         hf6k = float(np.median(M[:, freqs > 6000].sum(axis=1) / tot1))
         contrast = float(np.median(np.percentile(lM, 90, axis=1)
                                    - np.percentile(lM, 10, axis=1)))
+        # short-window vocoder traces (work even in <4s clips):
+        # gd_var = group-delay roughness (AI phase stumbles frame to frame)
+        ph = np.angle(np.fft.rfft(S[voiced], axis=1))
+        gd = np.diff(np.unwrap(ph, axis=1), axis=1)
+        band = (freqs[1:] > 300) & (freqs[1:] < 6000)
+        gd_var = float(np.median(np.std(gd[:, band], axis=1)) + 1e-9)
+        gd_var = float(np.log1p(gd_var))
+        # hf_slope = high-band tilt (vocoder hiss tilts differently)
+        hb = (freqs > 4000) & (freqs < 8000)
+        lhb = 20 * np.log10(M[:, hb] + 1e-9)
+        xs = np.linspace(-1, 1, lhb.shape[1])
+        hf_slope = float(np.median([(l - l.mean()) @ xs / (xs @ xs) for l in lhb]))
+        # hf_burst = burstiness of high-band energy (humans burst, bots hiss flat)
+        hfe = np.log10(M[:, freqs > 6000].sum(axis=1) + 1e-9)
+        hf_burst = float(np.std(hfe))
         fs = f0_stats(x, sr)
         vr = float(fs["voiced"] / max(1, len(frames)))
         feat = np.array([float(np.median(flats)), float(np.std(flats)),
                          float(np.median(hf2k)), float(np.median(hf4k)),
                          float(np.median(cent)), float(np.median(roll)),
                          zcr, vr, float(fs["jitter_rel"]), dyn, flux, pauses,
-                         crest, flat_high, hf6k, contrast])
+                         crest, flat_high, hf6k, contrast,
+                         gd_var, hf_slope, hf_burst])
         return np.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float64)
     except Exception:
         return np.zeros(len(FEATURES))
