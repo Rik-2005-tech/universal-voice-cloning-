@@ -21,10 +21,19 @@ def preprocess_audio(wav, sr_in: int, sr_out: int = 16000,
         # DC removal (mic offset) — cheap, always safe
         x = (x - float(np.mean(x))).astype(np.float32)
         info["steps"].append("dc-remove")
-        # light denoise: conservative gate so fricatives/LID cues survive
+        # light denoise: conservative gate so fricatives/LID cues survive.
+        # Bypass guard: if the gate collapses the signal (>20dB RMS drop),
+        # it mistook speech for noise -> keep the un-gated audio.
         try:
-            x = denoise_spectral_gate(x, sr_out, thresh_db=gate_db)
-            info["steps"].append(f"spectral-gate({gate_db}dB)")
+            rms_before = float(np.sqrt(np.mean(x ** 2) + 1e-12))
+            gated = denoise_spectral_gate(x, sr_out, thresh_db=gate_db, floor=0.15)
+            rms_after = float(np.sqrt(np.mean(gated ** 2) + 1e-12))
+            drop_db = 20.0 * float(np.log10(rms_before / (rms_after + 1e-12)))
+            if drop_db > 20.0:
+                info["steps"].append(f"gate-bypassed(collapse {drop_db:.1f}dB)")
+            else:
+                x = gated
+                info["steps"].append(f"spectral-gate({gate_db}dB)")
         except Exception as e:
             info["gate_skipped"] = str(e)
         x = normalize_loudness(x, target_rms=target_rms)
@@ -39,8 +48,12 @@ def preprocess_audio(wav, sr_in: int, sr_out: int = 16000,
             if len(loud):
                 a = max(0, loud[0] * fl - int(sr_out * 0.05))
                 b = min(len(x), (loud[-1] + 1) * fl + int(sr_out * 0.05))
-                x = x[a:b]
-                info["steps"].append(f"trim-silence:[{a}:{b}]")
+                # safety: never trim away >80% of the clip (threshold miss)
+                if (b - a) >= 0.2 * len(x):
+                    x = x[a:b]
+                    info["steps"].append(f"trim-silence:[{a}:{b}]")
+                else:
+                    info["steps"].append("trim-skipped(would-cut-too-much)")
         except Exception as e:
             info["trim_skipped"] = str(e)
         info["dur_out_s"] = round(len(x) / float(sr_out), 2)

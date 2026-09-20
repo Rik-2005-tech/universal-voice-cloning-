@@ -66,9 +66,27 @@ def main() -> None:
     ap.add_argument("--reply-out", default=None, help="reply-text file (default: <out>.reply.txt)")
     ap.add_argument("--clean-out", default=None, help="preprocessed-audio file (default: <out>.clean.wav)")
     ap.add_argument("--no-clean", action="store_true", help="skip saving preprocessed audio")
+    ap.add_argument("--detect", action="store_true", help="print HUMAN-vs-AI voice verdict for the input (fast model)")
+    ap.add_argument("--deep", action="store_true", help="use deep neural verdict (slower, ~1min, catches neural voices in en/hi/bn/fr/zh)")
     a = ap.parse_args()
 
     x, sr = load_audio(a.inp)
+    if a.detect or a.deep:
+        if a.deep:
+            try:
+                from polyvoice.deep_spoof import verdict_deep
+                v = verdict_deep(x, sr)
+                print(f"[polyvoice] deep verdict: {v['label']} "
+                      f"(p_fake={v.get('p_fake')}, thr={v.get('threshold')})")
+            except Exception as e:
+                print(f"[polyvoice] deep verdict unavailable ({e})")
+        else:
+            try:
+                from polyvoice.spoof import verdict
+                v = verdict(x, sr)
+                print(f"[polyvoice] voice verdict: {v['label']} (p_ai={v.get('p_ai')}, model_acc={v.get('model_acc')})")
+            except Exception as e:
+                print(f"[polyvoice] verdict unavailable ({e})")
     fw = None if (a.no_auto_stt or (a.fw_model or "").strip() == "") else (a.fw_model or "tiny")
     stt, info = resolve_stt(a.inp, a.text, a.lang, x, sr, fw)
     if info.get("mode") == "acoustic":
@@ -100,6 +118,21 @@ def main() -> None:
     cfg = PipelineConfig(force_lang=a.force_lang)
     pipe = PolyVoicePipeline(stt=stt, llm=llm, tts=tts, cfg=cfg)
     r = pipe.run_utterance(x, sr)
+    if a.lang and info.get("mode", "").startswith("auto-stt"):
+        # user knows the language better than the recognizer: keep its words,
+        # trust the user's language for understanding + reply voice.
+        from polyvoice.pipeline import detect_emotion, prosody_for, split_sentences
+        print(f"[polyvoice] language override: {r['lang']} -> {a.lang}")
+        r["lang"] = a.lang
+        r["reply"] = pipe.llm.complete(r["text"], a.lang)
+        r["emotion"] = detect_emotion(r["reply"])
+        r["style"] = prosody_for(r["emotion"], a.lang)
+        parts = [pipe.tts.synth(c, a.lang, r["style"])[0]
+                 for c in split_sentences(r["reply"])]
+        import numpy as _np3
+        r["audio"] = _np3.concatenate(
+            [_np3.asarray(w, dtype=_np3.float32).ravel() for w in parts])
+        r["sr"] = getattr(pipe.tts, "sr", 24000)
     prep = r.get("prep", {})
     print(f"[polyvoice] preprocessed: {' > '.join(prep.get('steps', []))} "
           f"(dur {prep.get('dur_in_s')}s -> {prep.get('dur_out_s')}s)")
