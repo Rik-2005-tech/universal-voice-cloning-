@@ -174,7 +174,9 @@ def load_detector(path: str = "detect.npz"):
 
 def verdict(wav, sr: int = 16000, path: str = "detect.npz") -> dict:
     """Classify a voice. Short clips (<4s) use the short threshold, else long.
-    Returns {label, p_ai, threshold}. Falls back gracefully."""
+    NOTE: an UNCERTAIN-abstention band was tried here and reverted — it cost
+    more correct medium-clip verdicts than it saved. Shorts remain the known
+    frontier (see logs/calib_short.log). Returns {label, p_ai, threshold}."""
     try:
         w, b, mu, sd, acc, thr_s, thr_l = load_detector(path)
         x = np.asarray(wav)
