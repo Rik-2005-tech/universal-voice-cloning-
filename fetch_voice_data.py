@@ -60,6 +60,12 @@ def main():
                 m = float(np.sqrt(np.mean(x ** 2) + 1e-12))
                 if m < 1e-4:  # skip digital silence
                     continue
+                try:
+                    from polyvoice.quality import is_clean
+                    if not is_clean(x, 16000):
+                        continue
+                except Exception:
+                    pass
                 name = f"{lang}_{i:05d}"
                 sf.write(os.path.join(d, name + ".wav"), x, 16000)
                 with open(os.path.join(d, name + ".txt"), "w", encoding="utf-8") as fh:

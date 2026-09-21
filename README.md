@@ -55,6 +55,21 @@ Real measured voice stats: Bengali 152.8Hz/wobble 0.19, English 175Hz/0.21,
 Hindi 224Hz/0.31. Voice-color distance to real voices after micro-EQ:
 Hindi **44% closer**, Bengali **19% closer**. `pytest`: 7 passed.
 
+## Human-vs-AI voice detector
+
+`--detect` (fast, <1s) and `--deep` (neural, ~1min) verdicts. The fast
+detector (`polyvoice/spoof.py`, weights `detect.npz`) uses 19 acoustic
+features (incl. vocoder-artifact bands) + duration-aware thresholds,
+trained by `train_spoof.py` on real speech (LibriSpeech/GramVaani/SLR),
+7 Piper neural voices, synth hums, and phone/noise/reverb/speed-matched
+copies. Data hygiene via `polyvoice/quality.py` + `clean_voice_data.py`
+(clipped/music/junk quarantine, wired into `fetch_voice_data.py`).
+
+Measured: **20/21 scenarios, 42/49 fresh-random**, zero false alarms on
+real humans incl. phone recordings. Known frontier: very short clips
+(<4s, human and AI overlap) and the Spanish davefx voice (fools every
+detector we own, deep ones included).
+
 Large files (`voices/`, `data_voice/`) are intentionally **not** in git —
 re-download with `check_voices.py` deps + `fetch_voice_data.py` /
 `convert_librispeech.py` / `convert_hindi.py` (+ SLR37 `bn_in.zip`).
