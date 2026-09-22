@@ -68,11 +68,20 @@ def main() -> None:
     ap.add_argument("--no-clean", action="store_true", help="skip saving preprocessed audio")
     ap.add_argument("--detect", action="store_true", help="print HUMAN-vs-AI voice verdict for the input (fast model)")
     ap.add_argument("--deep", action="store_true", help="use deep neural verdict (slower, ~1min, catches neural voices in en/hi/bn/fr/zh)")
+    ap.add_argument("--cascade", action="store_true", help="fast verdict + automatic deep confirmation on borderline clean clips")
     a = ap.parse_args()
 
     x, sr = load_audio(a.inp)
-    if a.detect or a.deep:
-        if a.deep:
+    if a.detect or a.deep or a.cascade:
+        if a.cascade:
+            try:
+                from polyvoice.deep_spoof import verdict_cascade
+                v = verdict_cascade(x, sr)
+                print(f"[polyvoice] cascade verdict: {v['label']} "
+                      f"(p={v.get('p_ai')}, via={v.get('via')})")
+            except Exception as e:
+                print(f"[polyvoice] cascade unavailable ({e})")
+        elif a.deep:
             try:
                 from polyvoice.deep_spoof import verdict_deep
                 v = verdict_deep(x, sr)

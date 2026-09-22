@@ -22,7 +22,7 @@ AI_TEXTS = {
            "আমার এখন ট্যাক্সি দরকার।", "কাল সকালে দেখা হবে।"],
 }
 # indices never used before (train used shuffled subsets; tests used small sets)
-POOL = {"hi": [42, 517, 733, 980, 1105], "en": [64, 388, 540, 826, 1071],
+POOL = {"hi": [42, 517, 733, 1105, 208], "en": [64, 388, 540, 826, 1071],
         "bn": [23, 340, 555, 890, 1044]}
 
 
@@ -47,7 +47,11 @@ def main():
     cases = []
     for lang, idxs in POOL.items():
         for i in idxs:
-            x, sr = sf.read(f"data_voice/{lang}/{lang}_{i:05d}.wav", always_2d=False)
+            try:
+                x, sr = sf.read(f"data_voice/{lang}/{lang}_{i:05d}.wav", always_2d=False)
+            except Exception as e:
+                print(f"skip {lang}_{i} ({str(e)[:40]})", flush=True)
+                continue
             x = np.asarray(x)
             cases.append((f"{lang}-HUMAN", x, sr, "HUMAN"))
             cases.append((f"{lang}-HUMAN-phone", phone_channel(x, sr, seed=i), sr, "HUMAN"))

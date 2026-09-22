@@ -57,15 +57,18 @@ Hindi **44% closer**, Bengali **19% closer**. `pytest`: 7 passed.
 
 ## Human-vs-AI voice detector
 
-`--detect` (fast, <1s) and `--deep` (neural, ~1min) verdicts. The fast
-detector (`polyvoice/spoof.py`, weights `detect.npz`) uses 19 acoustic
-features (incl. vocoder-artifact bands) + duration-aware thresholds,
-trained by `train_spoof.py` on real speech (LibriSpeech/GramVaani/SLR),
-7 Piper neural voices, synth hums, and phone/noise/reverb/speed-matched
-copies. Data hygiene via `polyvoice/quality.py` + `clean_voice_data.py`
-(clipped/music/junk quarantine, wired into `fetch_voice_data.py`).
+`--detect` (fast, <1s), `--deep` (neural, ~1min) and `--cascade` (fast gate +
+selective deep confirm) verdicts. The fast detector (`polyvoice/spoof.py`,
+weights `detect.npz`) uses 19 acoustic features (incl. vocoder-artifact
+bands) + condition-aware thresholds (clean/noisy/crowded x short/long,
+multi-window median scoring), trained by `train_spoof.py` on real speech
+(LibriSpeech/GramVaani/SLR), 7 Piper neural voices, synth hums, cocktail
+overlaps (two-talkers + street noise, both classes) and phone/noise/
+reverb/speed/call-noise-matched copies. Data hygiene via
+`polyvoice/quality.py` + `clean_voice_data.py` (clipped/music/jingle
+quarantine, wired into `fetch_voice_data.py`).
 
-Measured: **20/21 scenarios, 42/49 fresh-random**, zero false alarms on
+Measured: **19/21 scenarios, 43/49 fresh-random**, zero false alarms on
 real humans incl. phone recordings. Known frontier: very short clips
 (<4s, human and AI overlap) and the Spanish davefx voice (fools every
 detector we own, deep ones included).

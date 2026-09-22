@@ -149,10 +149,14 @@ def predict_proba(X: np.ndarray, w, b, mu, sd) -> np.ndarray:
 
 
 def save_detector(path: str, w, b, mu, sd, acc: float,
-                  thr_short: float = 0.5, thr_long: float = 0.5) -> None:
+                  thr_short: float = 0.5, thr_long: float = 0.5,
+                  thr_map: dict | None = None) -> None:
+    keys = sorted((thr_map or {}).keys())
     np.savez(path, w=w, b=np.array(b), mu=mu, sd=sd,
              acc=np.array(acc), feats=np.array(FEATURES),
-             thr_short=np.array(thr_short), thr_long=np.array(thr_long))
+             thr_short=np.array(thr_short), thr_long=np.array(thr_long),
+             thr_keys=np.array(keys),
+             thr_vals=np.array([(thr_map or {})[k] for k in keys]))
 
 
 def load_detector(path: str = "detect.npz"):
@@ -160,7 +164,7 @@ def load_detector(path: str = "detect.npz"):
     w = np.asarray(d["w"], dtype=np.float64).ravel()
     mu = np.asarray(d["mu"], dtype=np.float64).ravel()
     sd = np.asarray(d["sd"], dtype=np.float64).ravel()
-    # backward compat: old 12-dim weights work with 16-dim features
+    # backward compat: old 12-dim weights work with 16+/19-dim features
     # (new artifact features get zero weight until retrained)
     n = len(FEATURES)
     if w.size < n:
@@ -169,23 +173,42 @@ def load_detector(path: str = "detect.npz"):
         sd = np.pad(sd, (0, n - sd.size), constant_values=1.0)
     thr_s = float(d["thr_short"]) if "thr_short" in d.files else 0.5
     thr_l = float(d["thr_long"]) if "thr_long" in d.files else 0.5
-    return w, float(d["b"]), mu, sd, float(d["acc"]), thr_s, thr_l
+    tmap = {}
+    if "thr_keys" in d.files and len(d["thr_keys"]):
+        tmap = {str(k): float(v) for k, v in zip(d["thr_keys"], d["thr_vals"])}
+    return w, float(d["b"]), mu, sd, float(d["acc"]), thr_s, thr_l, tmap
+
+
+def _score_once(x, sr, w, b, mu, sd) -> float:
+    f = extract_features(x, sr)
+    return float(predict_proba(f[None, :], w, b, mu, sd)[0])
 
 
 def verdict(wav, sr: int = 16000, path: str = "detect.npz") -> dict:
-    """Classify a voice. Short clips (<4s) use the short threshold, else long.
-    NOTE: an UNCERTAIN-abstention band was tried here and reverted — it cost
-    more correct medium-clip verdicts than it saved. Shorts remain the known
-    frontier (see logs/calib_short.log). Returns {label, p_ai, threshold}."""
+    """Condition-aware verdict: multi-window median score (robust to local
+    noise bursts) + per-condition thresholds (clean/noisy/crowded x
+    short/long). Returns {label, p_ai, threshold, condition}. Never raises."""
     try:
-        w, b, mu, sd, acc, thr_s, thr_l = load_detector(path)
+        w, b, mu, sd, acc, thr_s, thr_l, tmap = load_detector(path)
         x = np.asarray(wav)
-        dur = len(x) / float(sr or 16000)
-        thr = thr_s if dur < 4.0 else thr_l
-        f = extract_features(wav, sr)
-        p = float(predict_proba(f[None, :], w, b, mu, sd)[0])
+        sr = int(sr or 16000)
+        dur = len(x) / float(sr)
+        cond = estimate_condition(x, sr)["bucket"]
+        # multi-window for files >= 6s: median resists local bursts
+        if dur >= 6.0:
+            wl, hop = 4.0 * sr, 2.0 * sr
+            ps = [_score_once(x[int(s):int(s + wl)], sr, w, b, mu, sd)
+                  for s in np.arange(0, max(1, len(x) - wl + 1), hop)]
+            p = float(np.median(ps)) if ps else _score_once(x, sr, w, b, mu, sd)
+            nw = len(ps)
+        else:
+            p = _score_once(x, sr, w, b, mu, sd)
+            nw = 1
+        key = f"{'short' if dur < 4.0 else 'long'}_{cond}"
+        thr = float(tmap.get(key, thr_s if dur < 4.0 else thr_l))
         return {"label": "AI" if p >= thr else "HUMAN", "p_ai": round(p, 3),
-                "threshold": round(thr, 2), "model_acc": round(acc, 3)}
+                "threshold": round(thr, 2), "model_acc": round(acc, 3),
+                "condition": cond, "windows": nw}
     except Exception as e:
         return {"label": "UNKNOWN", "p_ai": -1.0, "error": str(e)[:100]}
 
@@ -227,6 +250,54 @@ def add_noise(wav, sr: int = 16000, snr_db: float = 15.0, seed: int = 0) -> np.n
         return np.asarray(wav, dtype=np.float32)
 
 
+CALL_NOISES = ("street", "babble", "vehicle")
+
+
+def add_call_noise(wav, sr: int = 16000, kind: str | None = None,
+                   snr_db: float = 10.0, seed: int = 0) -> np.ndarray:
+    """Realistic call background: street rumble, crowd babble, or vehicle
+    cabin hum. Mixed under the voice like a real phone call. Numpy-only."""
+    try:
+        rng = np.random.default_rng(seed)
+        sr = int(sr or 16000)
+        x = np.asarray(wav, dtype=np.float64).ravel()
+        n = len(x)
+        if kind is None:
+            kind = CALL_NOISES[int(rng.integers(0, len(CALL_NOISES)))]
+        if kind == "street":
+            # lowpassed rumble + hiss (traffic through a mic)
+            w = rng.standard_normal(n)
+            S = np.fft.rfft(w)
+            fr = np.fft.rfftfreq(n, 1 / sr)
+            S = S / (1.0 + (fr / 400.0) ** 2)  # heavy lowpass
+            noise = np.fft.irfft(S, n=n).real
+        elif kind == "babble":
+            # crowd: noise gated by slow random syllabic envelope
+            w = rng.standard_normal(n)
+            env = 0.5 + 0.5 * np.sin(2 * np.pi * 3.0 * np.arange(n) / sr
+                                     + rng.uniform(0, 6.28))
+            env = env * (0.6 + 0.4 * rng.standard_normal(n))
+            S = np.fft.rfft(w * np.clip(env, 0, None))
+            fr = np.fft.rfftfreq(n, 1 / sr)
+            S[(fr < 200) | (fr > 5000)] *= 0.2  # voice-band crowd
+            noise = np.fft.irfft(S, n=n).real
+        else:  # vehicle cabin: engine hum + harmonics + soft hiss
+            t = np.arange(n) / sr
+            f0 = float(rng.uniform(70, 130))
+            hum = (np.sin(2 * np.pi * f0 * t)
+                   + 0.5 * np.sin(2 * np.pi * 2 * f0 * t)
+                   + 0.25 * np.sin(2 * np.pi * 3 * f0 * t))
+            hum = hum / (np.abs(hum).max() + 1e-9)
+            noise = hum * 0.7 + rng.standard_normal(n) * 0.3
+        sig = float(np.sqrt(np.mean(x ** 2) + 1e-12))
+        nz = float(np.sqrt(np.mean(noise ** 2) + 1e-12))
+        y = x + noise * (sig / (nz + 1e-12)) / (10.0 ** (snr_db / 20.0))
+        m = float(np.max(np.abs(y)) + 1e-12)
+        return (y * min(1.0, 0.89 / m)).astype(np.float32)
+    except Exception:
+        return np.asarray(wav, dtype=np.float32)
+
+
 def add_reverb(wav, sr: int = 16000, decay: float = 0.35, seed: int = 0) -> np.ndarray:
     """Small-room reverberation (exponential-decay noise IR). Both classes."""
     try:
@@ -252,6 +323,60 @@ def speed_perturb(wav, sr: int = 16000, factor: float = 1.0) -> np.ndarray:
         return y.astype(np.float32)
     except Exception:
         return np.asarray(wav, dtype=np.float32)
+
+
+def mix_voices(a, b, sr: int = 16000, voice_snr_db: float = 0.0,
+               seed: int = 0) -> np.ndarray:
+    """Cocktail: two voices talking over each other (crowded places)."""
+    try:
+        rng = np.random.default_rng(seed)
+        xa = np.asarray(a, dtype=np.float64).ravel()
+        xb = np.asarray(b, dtype=np.float64).ravel()
+        n = max(len(xa), len(xb))
+        if len(xa) < n:
+            xa = np.tile(xa, int(np.ceil(n / len(xa))))[:n]
+        if len(xb) < n:
+            xb = np.tile(xb, int(np.ceil(n / len(xb))))[:n]
+        off = int(rng.integers(0, max(1, n // 4)))
+        xb = np.concatenate([np.zeros(off), xb])[:n]
+        sa = float(np.sqrt(np.mean(xa ** 2) + 1e-12))
+        sb = float(np.sqrt(np.mean(xb ** 2) + 1e-12))
+        xb = xb * (sa / (sb + 1e-12)) / (10.0 ** (voice_snr_db / 20.0))
+        y = xa + xb
+        m = float(np.max(np.abs(y)) + 1e-12)
+        return (y * min(1.0, 0.89 / m)).astype(np.float32)
+    except Exception:
+        return np.asarray(a, dtype=np.float32)
+
+
+def estimate_condition(wav, sr: int = 16000) -> dict:
+    """clean / noisy / crowded + SNR estimate. Never raises."""
+    try:
+        x = np.asarray(wav, dtype=np.float64).ravel()
+        sr = int(sr or 16000)
+        fl = max(64, int(sr * 0.05))
+        env = np.array([np.sqrt(np.mean(x[i:i + fl] ** 2) + 1e-12)
+                        for i in range(0, max(1, len(x) - fl), fl)])
+        lo = float(np.percentile(env, 10))
+        hi = float(np.percentile(env, 90))
+        snr = 20.0 * np.log10(hi / (lo + 1e-12))
+        # spectral occupancy: crowded voices fill more bins steadily
+        n_fft = 1024
+        frames = [x[i:i + n_fft] * np.hanning(min(n_fft, max(1, len(x) - i)))
+                  for i in range(0, max(1, len(x) - n_fft), n_fft // 2)]
+        S = np.stack(frames) if frames else np.zeros((1, n_fft))
+        mag = np.abs(np.fft.rfft(S, axis=1)) + 1e-12
+        lmag = 20 * np.log10(mag)
+        occ = float(np.mean((lmag > (lmag.mean(axis=1, keepdims=True) + 10)).mean()))
+        if occ > 0.28 and snr < 18.0:
+            bucket = "crowded"
+        elif snr < 12.0:
+            bucket = "noisy"
+        else:
+            bucket = "clean"
+        return {"snr_db": round(snr, 1), "occupancy": round(occ, 3), "bucket": bucket}
+    except Exception:
+        return {"snr_db": 99.0, "occupancy": 0.0, "bucket": "clean"}
 
 
 def augment(wav, sr: int = 16000, seed: int = 0) -> np.ndarray:

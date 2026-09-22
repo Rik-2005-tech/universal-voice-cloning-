@@ -51,3 +51,44 @@ def verdict_deep(wav, sr: int = 16000, threshold: float | None = None) -> dict:
                 "threshold": thr}
     except Exception as e:
         return {"label": "UNKNOWN", "p_fake": -1.0, "error": str(e)[:120]}
+
+
+def _is_phone_quality(wav, sr: int = 16000) -> bool:
+    """True if narrowband/telephone-like (deep model is unreliable there)."""
+    try:
+        import numpy as _np
+        x = _np.asarray(wav, dtype=_np.float64).ravel()
+        S = _np.abs(_np.fft.rfft(x * _np.hanning(len(x)))) + 1e-12
+        fr = _np.fft.rfftfreq(len(x), 1 / float(sr or 16000))
+        return bool((S[fr > 4000] ** 2).sum() / (S ** 2).sum() < 0.005)
+    except Exception:
+        return False
+
+
+def verdict_cascade(wav, sr: int = 16000, path: str = "detect.npz",
+                    lo: float = 0.15, hi: float = 0.75) -> dict:
+    """Best of both: fast verdict always (<1s); deep confirmation only for
+    borderline scores on clean clips >=4s where deep is proven reliable.
+    Returns {label, p_ai, via, ...}. Never raises."""
+    try:
+        from .spoof import verdict as fast_verdict
+        fv = fast_verdict(wav, sr, path)
+        if fv.get("label") == "UNKNOWN":
+            return fv
+        p, dur = float(fv.get("p_ai", 0.0)), len(np.asarray(wav)) / float(sr or 16000)
+        if p < lo or dur < 4.0 or _is_phone_quality(wav, sr):
+            fv["via"] = "fast"
+            return fv
+        if p >= hi:
+            fv["via"] = "fast-confident"
+            return fv
+        dv = verdict_deep(wav, sr)
+        if dv.get("label") == "UNKNOWN":
+            fv["via"] = "fast(deep-unavailable)"
+            return fv
+        out = {"label": dv["label"], "p_ai": dv.get("p_fake"),
+               "via": "deep-confirm", "fast_p_ai": p,
+               "threshold": dv.get("threshold")}
+        return out
+    except Exception as e:
+        return {"label": "UNKNOWN", "p_ai": -1.0, "error": str(e)[:100]}
