@@ -51,7 +51,8 @@ def main():
     ok = 0
     per_lang = {}
     for name, x, sr, want in cases:
-        v = verdict(x, sr)
+        lang = name.split("-")[0]
+        v = verdict(x, sr, lang=lang if lang in ("hi", "en", "bn") else None)
         good = v["label"] == want
         ok += good
         lang = name.split("-")[0]

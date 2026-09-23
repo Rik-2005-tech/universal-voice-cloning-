@@ -490,6 +490,63 @@ def voice_for(lang: str) -> str:
 
 # ---------- real backends (optional, lazy imports) ----------
 
+# Expected native script per language (Unicode blocks). Used to catch LID
+# votes that contradict the transcript actually produced.
+_LANG_SCRIPTS = {
+    "bn": [("0980", "09FF")],   # Bengali
+    "hi": [("0900", "097F")],   # Devanagari
+    "zh": [("4E00", "9FFF"), ("3040", "30FF"), ("AC00", "D7FF")],  # CJK
+    "yue": [("4E00", "9FFF")],
+    "ar": [("0600", "06FF")],   # Arabic
+    "ur": [("0600", "06FF")],
+    "fa": [("0600", "06FF")],
+    "he": [("0590", "05FF")],   # Hebrew
+    "ru": [("0400", "04FF")],   # Cyrillic
+    "uk": [("0400", "04FF")],
+    "el": [("0370", "03FF")],   # Greek
+    "th": [("0E00", "0E7F")],   # Thai
+    "ta": [("0B80", "0BFF")],   # Tamil
+    "te": [("0C00", "0C7F")],   # Telugu
+    "kn": [("0C80", "0CFF")],   # Kannada
+    "ml": [("0D00", "0D7F")],   # Malayalam
+}
+
+# Romanized keywords proving the transcript really is that language
+# (whisper often romanizes Hindi/Bengali instead of native script).
+_ROMANIZED = {
+    "bn": ("nomoshkar", "namaskar", "kemon", "kamon", "achen", "acho", "dhonnobad",
+           "bhalo", "biday", "tumi", "apni", "apnar", "ki", "kothai", "akhon"),
+    "hi": ("namaste", "kaise", "dhanyavad", "shukriya", "alvida", "aapka",
+           "tumhara", "madad", "mausam", "kya", "kaise"),
+}
+
+_EN_COMMON = ("the", "is", "are", "what", "how", "and", "you", "that", "this",
+              "with", "have", "from", "page", "test", "your", "about", "more")
+
+
+def _script_consistent(text: str, lang: str) -> bool:
+    """True if the transcript plausibly matches the detected language."""
+    import re as _re
+    low = (text or "").lower()
+    words = _re.findall(r"[a-z']+", low)
+    if not words:
+        return True  # native script only (or empty) — trust the LID vote
+    ranges = _LANG_SCRIPTS.get((lang or "").split("-")[0].lower())
+    if ranges and any(any(int(a, 16) <= ord(c) <= int(b, 16) for a, b in ranges)
+                      for c in (text or "")):
+        return True  # native script present — trust the LID vote
+    if ranges:
+        # romanized? look for that language's keywords
+        keys = _ROMANIZED.get((lang or "").split("-")[0].lower(), ())
+        if keys and any(k in low for k in keys):
+            return True
+        # pure English sentences mislabelled: flip to English
+        en_hits = sum(1 for w in words if w in _EN_COMMON)
+        if en_hits >= 3 and len(words) >= 6:
+            return False
+    return True
+
+
 class FasterWhisperSTT(STTBackend):
     """Streaming-capable multilingual ASR with built-in LID. Requires faster-whisper."""
     def __init__(self, model: str = "small", device: str = "cpu", compute_type: str = "int8"):
@@ -497,10 +554,17 @@ class FasterWhisperSTT(STTBackend):
         self.m = WhisperModel(model, device=device, compute_type=compute_type)
     def transcribe(self, wav16k, sr: int = 16000):
         import numpy as np
+        x0 = np.asarray(wav16k, dtype=float)
+        if len(x0) == 0 or float((x0 ** 2).mean() ** 0.5) < 1e-4:
+            return "", "en", 0.0
         x = np.asarray(wav16k, dtype=np.float32)
         segs, info = self.m.transcribe(x, beam_size=1, vad_filter=True)
         txt = " ".join(s.text.strip() for s in segs).strip()
-        return txt, (info.language or "en"), float(info.language_probability or 0.0)
+        lang = (info.language or "en")
+        conf = float(info.language_probability or 0.0)
+        if txt and not _script_consistent(txt, lang):
+            lang, conf = "en", conf * 0.8
+        return txt, lang, conf
 
 
 class EdgeTTSBackend(TTSBackend):

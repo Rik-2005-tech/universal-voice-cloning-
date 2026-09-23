@@ -184,12 +184,81 @@ def _score_once(x, sr, w, b, mu, sd) -> float:
     return float(predict_proba(f[None, :], w, b, mu, sd)[0])
 
 
-def verdict(wav, sr: int = 16000, path: str = "detect.npz") -> dict:
+def _model_path_for(lang: str, path: str) -> str:
+    """Per-language weights when present (detect_hi.npz etc.), else the
+    shared model. Per-lang models resolve the bright/dark contradiction
+    between languages' human recordings."""
+    try:
+        import os as _os
+        try:
+            from .universal import normalize_lang as _nl
+            l = _nl(lang)
+        except Exception:
+            l = (lang or "en").split("-")[0].lower()
+        if l in ("hi", "en", "bn"):
+            cand = _os.path.join(_os.path.dirname(path) or ".", f"detect_{l}.npz")
+            if _os.path.exists(cand):
+                return cand
+    except Exception:
+        pass
+    return path
+
+
+_LID_MODEL = None
+
+
+def detect_language_audio(wav, sr: int = 16000) -> tuple[str, float]:
+    """Identify the spoken language straight from audio (faster-whisper LID).
+    Returns (lang_code, confidence). Never raises (falls back to en, 0.0)."""
+    global _LID_MODEL
+    try:
+        import numpy as _np
+        from .audio_io import to_mono_16k
+        x = to_mono_16k(_np.asarray(wav), int(sr or 16000), 16000).astype(_np.float32)
+        if _LID_MODEL is None:
+            from faster_whisper import WhisperModel
+            try:
+                _LID_MODEL = WhisperModel("base", device="cpu", compute_type="int8")
+            except Exception:
+                _LID_MODEL = WhisperModel("tiny", device="cpu", compute_type="int8")
+        segs, info = _LID_MODEL.transcribe(x, beam_size=1, vad_filter=True)
+        # drain generator so language detecting actually runs
+        for _ in segs:
+            pass
+        return (info.language or "en"), float(info.language_probability or 0.0)
+    except Exception:
+        return "en", 0.0
+
+
+def verdict_auto(wav, sr: int = 16000, path: str = "detect.npz") -> dict:
+    """Detect the language from the audio, then call that language's model
+    (per-lang weights for hi/en/bn, shared model otherwise). Low-confidence
+    LID (<0.5) falls back to the shared model instead of routing blindly.
+    Returns verdict dict + detected_lang. Never raises."""
+    try:
+        lang, conf = detect_language_audio(wav, sr)
+        if conf < 0.5:
+            v = verdict(wav, sr, path)
+            v["detected_lang"] = lang
+            v["lid_conf"] = round(conf, 2)
+            v["routing"] = "global(low-lid-conf)"
+            return v
+        v = verdict(wav, sr, path, lang=lang)
+        v["detected_lang"] = lang
+        v["lid_conf"] = round(conf, 2)
+        return v
+    except Exception as e:
+        return {"label": "UNKNOWN", "p_ai": -1.0, "error": str(e)[:100]}
+
+
+def verdict(wav, sr: int = 16000, path: str = "detect.npz", lang: str | None = None) -> dict:
     """Condition-aware verdict: multi-window median score (robust to local
     noise bursts) + per-condition thresholds (clean/noisy/crowded x
-    short/long). Returns {label, p_ai, threshold, condition}. Never raises."""
+    short/long). Routes hi/en/bn to per-language weights when present.
+    Returns {label, p_ai, threshold, condition}. Never raises."""
     try:
-        w, b, mu, sd, acc, thr_s, thr_l, tmap = load_detector(path)
+        use_path = _model_path_for(lang, path) if lang else path
+        w, b, mu, sd, acc, thr_s, thr_l, tmap = load_detector(use_path)
         x = np.asarray(wav)
         sr = int(sr or 16000)
         dur = len(x) / float(sr)
@@ -206,9 +275,10 @@ def verdict(wav, sr: int = 16000, path: str = "detect.npz") -> dict:
             nw = 1
         key = f"{'short' if dur < 4.0 else 'long'}_{cond}"
         thr = float(tmap.get(key, thr_s if dur < 4.0 else thr_l))
+        import os as _os2
         return {"label": "AI" if p >= thr else "HUMAN", "p_ai": round(p, 3),
                 "threshold": round(thr, 2), "model_acc": round(acc, 3),
-                "condition": cond, "windows": nw}
+                "condition": cond, "windows": nw, "model": _os2.path.basename(use_path)}
     except Exception as e:
         return {"label": "UNKNOWN", "p_ai": -1.0, "error": str(e)[:100]}
 

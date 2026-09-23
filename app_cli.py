@@ -91,9 +91,10 @@ def main() -> None:
                 print(f"[polyvoice] deep verdict unavailable ({e})")
         else:
             try:
-                from polyvoice.spoof import verdict
-                v = verdict(x, sr)
-                print(f"[polyvoice] voice verdict: {v['label']} (p_ai={v.get('p_ai')}, model_acc={v.get('model_acc')})")
+                from polyvoice.spoof import verdict_auto
+                v = verdict_auto(x, sr)
+                print(f"[polyvoice] voice verdict: {v['label']} (p_ai={v.get('p_ai')}, "
+                      f"lang={v.get('detected_lang')}, model={v.get('model')})")
             except Exception as e:
                 print(f"[polyvoice] verdict unavailable ({e})")
     fw = None if (a.no_auto_stt or (a.fw_model or "").strip() == "") else (a.fw_model or "tiny")

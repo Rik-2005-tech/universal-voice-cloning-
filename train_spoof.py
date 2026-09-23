@@ -39,6 +39,8 @@ def main():
                     help="add a second rotating copy (noise/reverb/speed/phone) per sample")
     ap.add_argument("--voices", default="",
                     help="comma list to narrow AI voices, e.g. en,hi,bn (default: all)")
+    ap.add_argument("--langs", default="hi,en,bn",
+                    help="comma list of human languages to train on (default: hi,en,bn)")
     ap.add_argument("--short-per-voice", type=int, default=15,
                     help="extra SHORT (1-4s) AI clips per voice (fixes short-clip blind spot)")
     ap.add_argument("--harsh", action="store_true",
@@ -113,7 +115,8 @@ def main():
             _row(tricky_ai(x, sr, seed), sr, label)
 
     # --- HUMAN: real speech clips ---
-    for lang in ["hi", "en", "bn"]:
+    train_langs = [s.strip() for s in (a.langs or "").split(",") if s.strip()] or ["hi", "en", "bn"]
+    for lang in train_langs:
         d = f"data_voice/{lang}"
         wavs = sorted(f for f in os.listdir(d) if f.endswith(".wav"))
         rng.shuffle(wavs)
@@ -178,23 +181,24 @@ def main():
     hum_texts = ["Hello, how are you today?", "नमस्ते, आप कैसे हैं?",
                  "নমস্কার, আপনি কেমন আছেন?"]
     hum_langs = ["en", "hi", "bn"]
-    for i in range(a.hum_n):
+    hum_keep = [i for i in range(a.hum_n) if hum_langs[i % len(hum_langs)] in train_langs]
+    for j, i in enumerate(hum_keep):
         lang = hum_langs[i % len(hum_langs)]
         w, sr = tts.synth(hum_texts[i % len(hum_texts)] + f" ({i})", lang)
         add_row(np.asarray(w), sr, 1, seed=2000 + i, harsh=a.harsh, tricky=a.tricky_ai)
-        if (i + 1) % 20 == 0:
-            print(f"hums: {i + 1}/{a.hum_n}", flush=True)
+        if (j + 1) % 20 == 0:
+            print(f"hums: {j + 1}/{len(hum_keep)}", flush=True)
     print(f"ai samples: {sum(y)}", flush=True)
     # --- CROWD: overlapped voices + street noise (noisy streets/crowds) ---
     if a.crowd_n > 0:
         import soundfile as _sf
         pool = {}
-        for lang in ["hi", "en", "bn"]:
+        for lang in train_langs:
             d = f"data_voice/{lang}"
             files = sorted(f for f in os.listdir(d) if f.endswith(".wav"))
             rng.shuffle(files)
             pool[lang] = [os.path.join(d, f) for f in files[:max(60, a.crowd_n)]]
-        for lang in ["hi", "en", "bn"]:
+        for lang in train_langs:
             made = 0
             for k in range(a.crowd_n):
                 try:
@@ -214,7 +218,7 @@ def main():
         # AI voices talking over human chatter + street noise
         from polyvoice.backends import PiperTTS as _PT
         for lang, model in _PT.VOICE_MAP.items():
-            if lang not in ("en", "hi", "bn"):
+            if lang not in train_langs:
                 continue
             made = 0
             texts = FALLBACK_TEXTS.get(lang, FALLBACK_TEXTS["en"])
