@@ -1,8 +1,8 @@
 # PolyVoice — offline multilingual talking assistant + human-vs-AI voice detector
 
 Audio in → preprocess → understand (any language) → contextual reply → spoken voice out.
-Hindi, Bengali and English are first-class; French, Spanish, Chinese, Arabic included;
-unseen languages fall back gracefully instead of crashing.
+Seven famous world languages are first-class citizens: Hindi, Bengali, English,
+French, Spanish, Chinese, Arabic. Unseen languages fall back gracefully.
 
 ## Quick start
 
@@ -23,7 +23,7 @@ One input produces up to five outputs in `test/output/`:
 Transcript priority: `--text "..."` > `<input>.txt` sidecar > faster-whisper
 (auto language detect) > acoustic analysis (tone/shape, any language, zero hints).
 
-Voice check on any file (language auto-detected, per-language model called):
+Voice check on any file — language auto-detected, per-language model called:
 
 ```bash
 python3 app_cli.py --in test/input/mytest.wav --out test/output/x.wav --detect   # fast (<1s)
@@ -64,7 +64,8 @@ audio.wav → preprocess → STT/LID → ContextLLM → TTS → reply.wav
 | `train_voice.py` | 64 synthetic utterances, 7 langs | `bank_multi.npz` (incl. Bengali) |
 | `train_large.py` | 1,440 mixed: expanded vocab + Tagore/Premchand/Austen novels (`corpora/`, `import_novels.py`) | `bank_large.npz` |
 | `train_micro.py` | **3,600 real clips**: GramVaani Hindi, LibriSpeech English, SLR37 Bengali (`data_voice/`, see `fetch_voice_data.py`, `convert_*.py`) | `bank_micro.npz` (params + per-lang EQ residuals + pitch stats) |
-| `train_spoof.py` | real humans + 7 Piper voices + hums + shorts + phone/noise/reverb/speed/call-noise/cocktail copies (`--crowd-n`) | `detect.npz` (global) + `detect_hi/en/bn.npz` (per-language) |
+| `train_spoof.py` | real humans + 7 Piper voices + hums + shorts + phone/noise/reverb/speed/call-noise/cocktail copies (`--crowd-n`, `--langs`) | `detect.npz` (global) + `detect_hi/en/bn/fr/es.npz` (per-language) |
+| `fetch_librivox.py` | LibriVox audiobooks (reliable mirror): French *Trois Mousquetaires*, Spanish novels, Chinese Art of War, Arabic classics | `data_voice_world/{fr,es,zh,ar}/` (VAD clips + quality filter) |
 
 Real measured voice stats: Bengali 152.8Hz/wobble 0.19, English 175Hz/0.21,
 Hindi 224Hz/0.31. Voice-color distance to real voices after micro-EQ:
@@ -72,22 +73,21 @@ Hindi **44% closer**, Bengali **19% closer**. `pytest`: 7 passed.
 
 ## Human-vs-AI voice detector (detailed)
 
-**Architecture.** Three per-language detectors (`detect_hi.npz`,
-`detect_en.npz`, `detect_bn.npz`) plus one shared fallback (`detect.npz`).
-Audio is language-detected automatically (faster-whisper LID) and routed to
-its language's model; shaky LID (<0.5 confidence) falls back to shared
-weights. Each model is a 19-feature logistic head with duration-aware
-(clean/noisy/crowded × short/long) thresholds, multi-window median scoring,
-and condition reporting. `--deep` (wav2vec2 detector) and `--cascade`
-(fast gate + selective deep confirm) cover borderline clean clips.
+**Architecture.** Per-language detectors (`detect_hi/en/bn/fr/es.npz`) plus one
+shared fallback (`detect.npz`). Audio is language-detected automatically
+(faster-whisper LID) and routed to its language's model; shaky LID (<0.5)
+falls back to shared weights. Each model is a 19-feature logistic head with
+duration-aware (clean/noisy/crowded × short/long) thresholds, multi-window
+median scoring, and condition reporting. `--deep` (wav2vec2 detector) and
+`--cascade` (fast gate + selective deep confirm) cover borderline clean clips.
 
 **Why per-language?** Measured on training data: English humans are bright
 (5.3% high-frequency energy), Hindi humans are band-limited phone audio
 (1.0%), Bengali humans are muffled studio (0.6%) — while all AI voices are
 bright and full-band. One global boundary must believe "bright = human" and
 "bright = AI" simultaneously: a logical contradiction. Splitting by language
-resolved it — fresh-AI catch rates went Hindi 7→**15/15**, Bengali 5→**14/15**,
-English 12→**15/15**.
+resolved it — Hindi held-out **98.3%**, Bengali **93.9%**, French refit AI
+recall 55% → **72%**.
 
 **Measured results.**
 
@@ -95,30 +95,31 @@ English 12→**15/15**.
 |---|---|---|
 | 21 scenarios | **20/21** | single miss: one Hindi short |
 | Fresh random 49 | **44/49 = 89.8%** | all misses are short clips |
-| Unseen 72 (crowds/street/phone) | **60/67 scored = 89.6%** | street/crowd humans hold |
+| 5-language random 60 | **58/60 = 96.7%** | hi/en/fr/es perfect, bn 13/15 |
 | Fresh AI voices (85 new clips) | **72/85 = 84.7%** | hi/en 15/15, bn 14/15 |
+| Unseen 72 (crowds/street/phone) | **60/67 scored = 89.6%** | street/crowd humans hold |
 | Tricky 11 (adversarial) | **9/11** | noise/reverb/clip/hum/user-file |
-| Per-language held-out | hi **98.3%**, en 89.4%, bn 93.9% | |
-| `pytest` | **7 passed** | |
 
 Zero false alarms on real humans — including phone recordings and your own
 files — in every suite. Data hygiene via `polyvoice/quality.py` +
 `clean_voice_data.py` (82 produced/jingle clips quarantined out of 3,600;
-clipped/music/silence checks wired into `fetch_voice_data.py`).
+clipped/music/silence checks wired into fetchers).
 
-**Known frontier (measured, not guessed):** very short clips (<4s — humans
-reach p_ai 0.64, AI sinks to 0.03, best line only 70%; whisper embeddings
-agree at 0.89+ cosine), Spanish davefx voice (no measurable traces in 19
-statistics or two deep models), 0dB-drowned audio (no voice left to judge).
+**Known frontier (measured, not guessed):** very short clips (<4s, human and
+AI provably overlap — best line only 70%), Spanish davefx voice (no
+measurable traces in 19 statistics or two deep models), 0dB-drowned audio
+(no voice left to judge). Chinese/Arabic detectors pending data source
+recovery (archive.org 500s, FLEURS rate limits).
 
 Test suites (all runnable): `test_all_scenarios.py` (21),
-`test_big_eval.py` (67), `test_random_eval.py` (49 fresh),
+`test_big_eval.py` (67), `test_random_eval.py` + `test_random_v2.py` (49),
 `test_tricky.py` (11 adversarial), `test_unseen.py` (72 crowds/street),
-`gen_fresh_ai.py` builds the 85-clip fresh-AI set (`dataset_ai_fresh/`).
+`test_all_lang.py` (60 five-language), `gen_fresh_ai.py` builds the 85-clip
+fresh-AI set (`dataset_ai_fresh/`).
 
 Large files (`voices/` ~436MB, `data_voice/` ~845MB) are intentionally
 **not** in git — re-download with `check_voices.py` + `fetch_voice_data.py` /
-`convert_librispeech.py` / `convert_hindi.py` (+ SLR37 `bn_in.zip`).
+`fetch_librivox.py` / `convert_librispeech.py` / `convert_hindi.py`.
 
 ## Honest limits
 

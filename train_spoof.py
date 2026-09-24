@@ -116,8 +116,15 @@ def main():
 
     # --- HUMAN: real speech clips ---
     train_langs = [s.strip() for s in (a.langs or "").split(",") if s.strip()] or ["hi", "en", "bn"]
+
+    def _human_dir(lang: str) -> str:
+        for cand in (f"data_voice/{lang}", f"data_voice_world/{lang}"):
+            if os.path.isdir(cand):
+                return cand
+        return f"data_voice/{lang}"
+
     for lang in train_langs:
-        d = f"data_voice/{lang}"
+        d = _human_dir(lang)
         wavs = sorted(f for f in os.listdir(d) if f.endswith(".wav"))
         rng.shuffle(wavs)
         for k, f in enumerate(wavs[:a.human_per_lang]):
@@ -161,7 +168,7 @@ def main():
         if os.path.exists(corp):
             with open(corp, encoding="utf-8") as fh:
                 for line in fh:
-                    for s in _re.split(r"(?<=[।?!])\s+", line.strip()):
+                    for s in _re.split(r"(?<=[।?!.。！？؟])\s+", line.strip()):
                         s = s.strip()
                         if 10 <= len(s) <= 60:
                             pool.append(s)
@@ -179,8 +186,10 @@ def main():
     # --- AI: our own synth hum (focused langs only) ---
     tts = SuperhumanTTS(ckpt="bank_large.npz")
     hum_texts = ["Hello, how are you today?", "नमस्ते, आप कैसे हैं?",
-                 "নমস্কার, আপনি কেমন আছেন?"]
-    hum_langs = ["en", "hi", "bn"]
+                 "নমস্কার, আপনি কেমন আছেন?", "Bonjour, comment vas-tu?",
+                 "Hola, cómo estás hoy?", "你好，你今天怎么样?",
+                 "مرحبا، كيف حالك اليوم؟"]
+    hum_langs = ["en", "hi", "bn", "fr", "es", "zh", "ar"]
     hum_keep = [i for i in range(a.hum_n) if hum_langs[i % len(hum_langs)] in train_langs]
     for j, i in enumerate(hum_keep):
         lang = hum_langs[i % len(hum_langs)]
@@ -194,7 +203,7 @@ def main():
         import soundfile as _sf
         pool = {}
         for lang in train_langs:
-            d = f"data_voice/{lang}"
+            d = _human_dir(lang)
             files = sorted(f for f in os.listdir(d) if f.endswith(".wav"))
             rng.shuffle(files)
             pool[lang] = [os.path.join(d, f) for f in files[:max(60, a.crowd_n)]]

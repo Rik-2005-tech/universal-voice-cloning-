@@ -21,12 +21,36 @@ FALLBACK_TEXTS = {
     "bn": ["নমস্কার! আপনি কেমন আছেন?", "আজ আবহাওয়া খুব ভালো।",
            "অনেক অনেক ধন্যবাদ, বিদায়!", "আপনার নাম কী?"],
     "fr": ["Bonjour, comment vas-tu?", "Je vais très bien, merci beaucoup.",
-           "Merci beaucoup, au revoir!", "Quel temps fait-il aujourd'hui?"],
+           "Merci beaucoup, au revoir!", "Quel temps fait-il aujourd'hui?",
+           "La rivière coule sous le vieux pont de pierre.", "Elle a fait ses valises avant l'aube.",
+           "Chaque fenêtre brillait d'une douce lumière.", "L'enfant riait du chien qui dansait.",
+           "La pluie a tambouriné sur le toit toute la nuit.", "Le train part à sept heures précises.",
+           "J'ai perdu mes clés quelque part.", "Le café du matin sentait très bon.",
+           "Nous marchions lentement vers la mer.", "Son sourire illuminait la pièce."],
     "es": ["Hola, cómo estás hoy?", "Muchas gracias, adiós!",
-           "El clima está maravilloso hoy.", "Hasta luego, que tengas buen día."],
-    "zh": ["你好，你今天怎么样?", "今天天气非常好。", "非常感谢，再见！", "请问你叫什么名字?"],
+           "El clima está maravilloso hoy.", "Hasta luego, que tengas buen día.",
+           "Buenos días, bienvenido a casa.", "Dónde está la estación de tren?",
+           "Necesito ayuda urgente, por favor.", "Me gusta mucho esta canción.",
+           "Qué hora es ahora mismo?", "Hablas muy claro, gracias.",
+           "Ayer llovió todo el día.", "Mañana será un día soleado.",
+           "Mi familia vive en un pueblo pequeño.", "El libro es muy interesante.",
+           "Por favor llama un taxi.", "La cena está lista, vamos.",
+           "Tengo una pregunta importante.", "Nos vemos pronto, cuídate."],
+    "zh": ["你好，你今天怎么样?", "今天天气非常好。", "非常感谢，再见！", "请问你叫什么名字?",
+           "河流静静地流过古老的石桥。", "她在日出前收拾好了行李。",
+           "每扇窗户都透出温暖的黄光。", "孩子看着跳舞的小狗笑了。",
+           "雨整夜敲打着铁皮屋顶。", "火车七点整准时出发。",
+           "我把钥匙丢在什么地方了。", "早晨的咖啡闻起来很香。",
+           "我们慢慢地走向大海。", "她的微笑照亮了房间。"],
     "ar": ["مرحبا، كيف حالك اليوم؟", "شكرا جزيلا، وداعا!",
-           "الطقس جميل جدا هذا الصباح.", "إلى اللقاء، أتمنى لك يوما سعيدا."],
+           "الطقس جميل جدا هذا الصباح.", "إلى اللقاء، أتمنى لك يوما سعيدا.",
+           "صباح الخير، أهلا بك.", "أين محطة القطار من فضلك؟",
+           "أحتاج إلى مساعدة عاجلة.", "أحب هذه الأغنية كثيرا.",
+           "كم الساعة الآن؟", "كلامك واضح جدا، شكرا.",
+           "أمطرت السماء طوال أمس.", "غدا سيكون يوما مشمسا.",
+           "عائلتي تعيش في قرية صغيرة.", "الكتاب ممتع جدا.",
+           "من فضلك اتصل بسيارة أجرة.", "العشاء جاهز، هيا بنا.",
+           "لدي سؤال مهم.", "أراك قريبا، اعتن بنفسك."],
 }
 EXTRA_TEXTS = {
     "es": ["Hola, cómo estás hoy?", "Muchas gracias, adiós!",
@@ -195,7 +219,7 @@ def _model_path_for(lang: str, path: str) -> str:
             l = _nl(lang)
         except Exception:
             l = (lang or "en").split("-")[0].lower()
-        if l in ("hi", "en", "bn"):
+        if l in ("hi", "en", "bn", "fr", "es", "zh", "ar"):
             cand = _os.path.join(_os.path.dirname(path) or ".", f"detect_{l}.npz")
             if _os.path.exists(cand):
                 return cand
