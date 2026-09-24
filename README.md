@@ -98,6 +98,7 @@ recall 55% → **72%**.
 | 5-language random 60 | **58/60 = 96.7%** | hi/en/fr/es perfect, bn 13/15 |
 | Fresh AI voices (85 new clips) | **72/85 = 84.7%** | hi/en 15/15, bn 14/15 |
 | Unseen 72 (crowds/street/phone) | **60/67 scored = 89.6%** | street/crowd humans hold |
+| Hardest (street5/crowds, 5 langs) | **48/55 = 87.3%** | all crowds pass; misses are street-noise humans |
 | Tricky 11 (adversarial) | **9/11** | noise/reverb/clip/hum/user-file |
 
 Zero false alarms on real humans — including phone recordings and your own
@@ -114,8 +115,8 @@ recovery (archive.org 500s, FLEURS rate limits).
 Test suites (all runnable): `test_all_scenarios.py` (21),
 `test_big_eval.py` (67), `test_random_eval.py` + `test_random_v2.py` (49),
 `test_tricky.py` (11 adversarial), `test_unseen.py` (72 crowds/street),
-`test_all_lang.py` (60 five-language), `gen_fresh_ai.py` builds the 85-clip
-fresh-AI set (`dataset_ai_fresh/`).
+`test_all_lang.py` (60 five-language), `test_hardest.py` (55 street/crowd),
+`gen_fresh_ai.py` builds the 85-clip fresh-AI set (`dataset_ai_fresh/`).
 
 Large files (`voices/` ~436MB, `data_voice/` ~845MB) are intentionally
 **not** in git — re-download with `check_voices.py` + `fetch_voice_data.py` /
