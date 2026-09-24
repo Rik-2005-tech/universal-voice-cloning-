@@ -119,6 +119,33 @@ class AcousticSTT(STTBackend):
         return info["descriptor"], self.lang, float(self.conf)
 
 
+# Words never echoed back (abuse must not be parroted). Small multilingual
+# seed list; extend per deployment.
+_ECHO_BLOCKED = frozenset("""
+fuck fucking shit bitch whore slut bastard idiot stupid hate kill die
+chutiya chutiye behenchod madarchod bhenchod saala kutta kuttia harami
+pagal mar jaana chut chudai lund gandu chutad randi
+বোকা মর শালা কুত্তা হারামি
+बेवकूफ मर साले कुत्ते हरामी कमीने
+connard connasse salope pute merde crétin crétins
+idiota estúpido mierda puta zorra odio matar muérete
+""".split())
+
+
+def _safe_echo(text: str, limit: int = 80) -> str:
+    """Sanitized user quote for replies: printable chars only, capped length,
+    empty when blocklisted (caller then skips the echo)."""
+    import re as _re
+    t = _re.sub(r"[^\x09\x0a\x20-\uFFFF]", "", text or "").strip()
+    t = _re.sub(r"\s+", " ", t)[:limit].strip()
+    if not t:
+        return ""
+    low = t.lower()
+    if any(b in low for b in _ECHO_BLOCKED):
+        return ""
+    return t
+
+
 @dataclass
 class ContextLLM(LLMBackend):
     """Offline contextual brain: intent + short conversation memory.
@@ -126,12 +153,23 @@ class ContextLLM(LLMBackend):
     Understands greeting / how-are-you / weather / name / help / thanks /
     bye / time / generic question vs statement, replies in the user's
     language (en/fr/es/de/hi fallback en), references prior turns.
+    Deploy-safe: bounded memory window (MAX_HISTORY) with a monotonic turn
+    counter, and user text is never echoed verbatim without sanitizing.
     """
     history: list = None
+    max_history: int = 20
 
     def __post_init__(self):
         if self.history is None:
             self.history = []
+        self._turn = len(self.history)
+
+    def _remember(self, entry: dict) -> None:
+        self._turn += 1
+        entry["turn"] = self._turn
+        self.history.append(entry)
+        if len(self.history) > max(1, int(self.max_history)):
+            del self.history[:len(self.history) - int(self.max_history)]
 
     def _intent(self, low: str) -> str:
         if not low:
@@ -175,7 +213,6 @@ class ContextLLM(LLMBackend):
         clean = re.sub(r"\s+", " ", (text or "")).strip()
         low = clean.lower()
         intent = self._intent(low)
-        n_prev = len(self.history)
         T = {
             "en": {
                 "silence": "I didn't hear anything. Could you please speak again?",
@@ -286,14 +323,15 @@ class ContextLLM(LLMBackend):
         table = T.get(lang, T["en"])
         reply = table.get(intent, table["statement"])
         # contextual grounding: echo short user content + reference turn number
-        # (skip echo for raw-audio descriptors and silence)
+        # (skip echo for raw-audio descriptors and silence; sanitize the echo
+        # so abuse can never be parroted back, and never echo blocklisted text)
         if clean and intent not in ("silence", "heard_question", "heard_statement"):
-            short = clean[:120]
-            if intent in ("question", "statement"):
+            short = _safe_echo(clean)
+            if intent in ("question", "statement") and short:
                 reply = f"{reply} (You said: \u00ab {short} \u00bb.)"
-            if n_prev > 0:
-                reply = f"{reply} [turn {n_prev + 1}]"
-        self.history.append({"user": clean, "intent": intent, "lang": lang, "reply": reply})
+            if self._turn > 0:
+                reply = f"{reply} [turn {self._turn + 1}]"
+        self._remember({"user": clean, "intent": intent, "lang": lang, "reply": reply})
         return reply
 
     async def stream(self, text: str, lang: str):
@@ -589,16 +627,102 @@ class EdgeTTSBackend(TTSBackend):
 
 
 class TransformersLLM(LLMBackend):
-    def __init__(self, model: str = "Qwen/Qwen2.5-1.5B-Instruct"):
+    def __init__(self, model: str = "Qwen/Qwen2.5-0.5B-Instruct"):
         from transformers import AutoTokenizer, AutoModelForCausalLM
         import torch
         self.tok = AutoTokenizer.from_pretrained(model)
-        self.net = AutoModelForCausalLM.from_pretrained(model, torch_dtype="auto", device_map="auto")
+        # plain CPU load (no accelerate/device_map needed)
+        self.net = AutoModelForCausalLM.from_pretrained(model, dtype=torch.float32)
+        self.net.eval()
         import torch as _t
         self._t = _t
     def complete(self, text: str, lang: str) -> str:
         sys = f"Reply ONLY in ISO language '{lang}'. Be concise, warm, perfectly grammatical, one breath."
         msgs = [{"role": "system", "content": sys}, {"role": "user", "content": text}]
-        ids = self.tok.apply_chat_template(msgs, return_tensors="pt", add_generation_prompt=True).to(self.net.device)
+        enc = self.tok.apply_chat_template(msgs, return_tensors="pt", add_generation_prompt=True)
+        ids = enc["input_ids"]  # plain tensor (BatchEncoding breaks generate())
+        try:
+            ids = ids.to(self.net.device)
+        except Exception:
+            pass
         out = self.net.generate(ids, max_new_tokens=120, do_sample=False)
         return self.tok.decode(out[0][len(ids[0]):], skip_special_tokens=True)
+
+
+# intents the rule brain owns outright (deterministic, safe, instant)
+RULED_INTENTS = frozenset({
+    "silence", "greeting", "how_are_you", "weather", "name", "help",
+    "thanks", "bye", "time", "heard_question", "heard_statement",
+})
+
+
+@dataclass
+class HybridLLM(LLMBackend):
+    """Rule brain as guardrail + local LLM for open questions/statements.
+
+    Deterministic intents -> instant vetted rule replies (with memory).
+    Generic question/statement -> local transformers model with recent
+    history as context; ANY failure, blocklisted output, or empty reply
+    falls back to the rule brain. Never raises, never parrots abuse.
+    """
+    model: str = "Qwen/Qwen2.5-0.5B-Instruct"
+    max_history: int = 20
+    rules: ContextLLM | None = None
+    _llm: object = None
+
+    def __post_init__(self):
+        if self.rules is None:
+            self.rules = ContextLLM(max_history=self.max_history)
+
+    @property
+    def history(self):
+        return self.rules.history
+
+    def _llm_or_none(self):
+        if self._llm is None:
+            try:
+                self._llm = TransformersLLM(model=self.model)
+            except Exception:
+                self._llm = False
+        return self._llm or None
+
+    def _guarded(self, reply: str) -> str:
+        """Sanitize LLM output; return '' if it must not be spoken."""
+        import re as _re
+        t = _re.sub(r"[^\x09\x0a\x20-\uFFFF]", "", reply or "").strip()
+        t = _re.sub(r"\s+", " ", t)[:400].strip()
+        if not t:
+            return ""
+        low = t.lower()
+        if any(b in low for b in _ECHO_BLOCKED):
+            return ""
+        return t
+
+    def complete(self, text: str, lang: str) -> str:
+        import re as _re
+        clean = _re.sub(r"\s+", " ", (text or "")).strip()
+        intent = self.rules._intent(clean.lower())
+        if intent in RULED_INTENTS:
+            return self.rules.complete(text, lang)
+        llm = self._llm_or_none()
+        if llm is not None:
+            try:
+                ctx = " ".join(
+                    f"User: {h['user'][:80]} Assistant: {h['reply'][:80]}"
+                    for h in self.rules.history[-4:])
+                prompt = (f"{ctx} User: {clean}" if ctx else clean)
+                guarded = self._guarded(llm.complete(prompt, lang))
+                if guarded:
+                    self.rules._remember({"user": clean, "intent": intent,
+                                          "lang": lang, "reply": guarded})
+                    n = self.rules._turn
+                    return f"{guarded} [turn {n}]" if n > 1 else guarded
+            except Exception:
+                pass
+        return self.rules.complete(text, lang)
+
+    async def stream(self, text: str, lang: str):
+        full = self.complete(text, lang)
+        for w in full.split(" "):
+            yield w + " "
+            await asyncio.sleep(0)

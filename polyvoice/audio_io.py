@@ -32,39 +32,64 @@ def normalize_loudness(x: np.ndarray, target_rms: float = 0.12, peak: float = 0.
 
 
 def denoise_spectral_gate(x: np.ndarray, sr: int = 16000, thresh_db: float = -28.0,
-                          floor: float = 0.15) -> np.ndarray:
-    """Lightweight noise gate. Noise profile comes from the QUIETEST 200ms
+                          floor: float = 0.15, n_fft: int = 2048,
+                          hop: int | None = None,
+                          voice_band: tuple[float, float] = (300.0, 3400.0),
+                          voice_ease_db: float = 6.0,
+                          smooth_ms: tuple[float, float] = (20.0, 120.0)) -> np.ndarray:
+    """Minute noise filter. Noise profile comes from the QUIETEST 200ms
     window (first-200ms estimate eats files that start with speech).
-    Soft mask with a raised floor so phonetics survive for language ID.
+    Finer than before in three ways:
+      1. per-band thresholds: the voice band (default 300-3400Hz) is gated
+         `voice_ease_db` gentler so phonetics survive; rumble/hiss outside
+         get the full threshold;
+      2. fine 2048-point FFT with 75% overlap (narrow bins smear less speech
+         into suppression zones);
+      3. temporal mask smoothing (fast attack / slow release kills warbling).
+    Soft mask with a raised floor so nothing gates fully shut.
     """
     x = np.asarray(x, dtype=np.float32)
     if len(x) < sr // 2:
         return x
-    n_fft = 512
-    hop = 256
+    hop = hop or (n_fft // 4)
     # frame
     frames = [x[i:i + n_fft] * np.hanning(n_fft) for i in range(0, len(x) - n_fft, hop)]
     if not frames:
         return x
     S = np.stack(frames)
     mag = np.abs(np.fft.rfft(S, axis=1))
+    freqs = np.fft.rfftfreq(n_fft, 1 / sr)
     # quietest ~200ms window = true background (never speech onset)
     wframes = max(1, int(0.2 * sr / hop))
     e = (mag ** 2).mean(axis=1)
     if len(e) > wframes:
+        step = max(1, wframes // 2)
         s0 = int(np.argmin([e[i:i + wframes].mean()
-                            for i in range(0, len(e) - wframes, max(1, wframes // 2))])
-                 * max(1, wframes // 2))
+                            for i in range(0, len(e) - wframes, step)]) * step)
         noise = np.median(mag[s0:s0 + wframes], axis=0, keepdims=True)
     else:
         noise = np.median(mag, axis=0, keepdims=True)
-    thresh = noise * (10.0 ** (thresh_db / -20.0) / 10.0)
+    base = noise * (10.0 ** (thresh_db / -20.0) / 10.0)
+    # per-band: gentler (LOWER) threshold inside the voice band so phonetics
+    # survive; full strength on rumble/hiss outside it.
+    in_voice = (freqs >= voice_band[0]) & (freqs <= voice_band[1])
+    ease = 10.0 ** (voice_ease_db / 20.0)
+    thresh = np.where(in_voice[None, :], base / ease, base)
     # soft mask with raised floor (never gate fully shut on speech)
     mask = np.clip((mag - thresh) / (thresh + 1e-8), floor, 1.0)
+    # temporal smoothing: fast attack, slow release (kills musical warbling)
+    atk = float(np.exp(-hop / sr / (smooth_ms[0] / 1000.0)))
+    rel = float(np.exp(-hop / sr / (smooth_ms[1] / 1000.0)))
+    ms = np.empty_like(mask)
+    ms[0] = mask[0]
+    for t in range(1, len(mask)):
+        c = np.where(mask[t] >= ms[t - 1], atk, rel)
+        ms[t] = c * ms[t - 1] + (1.0 - c) * mask[t]
+    mask = ms
     phase = np.angle(np.fft.rfft(S, axis=1))
     Y = mag * mask * np.exp(1j * phase)
     # overlap-add WITHOUT re-windowing (frames already windowed at analysis);
-    # normalize by overlapped window sum (==1 for hann/50% except edges)
+    # normalize by overlapped window sum (==1 for hann/50%+ except edges)
     rec = np.fft.irfft(Y, n=n_fft, axis=1)
     win = np.hanning(n_fft)
     out = np.zeros(len(x), dtype=np.float64)

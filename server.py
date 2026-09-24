@@ -16,9 +16,14 @@ except Exception:
 import asyncio
 import numpy as np
 from polyvoice.pipeline import PolyVoicePipeline
-from polyvoice.backends import DummySTT, DummyLLM, DummyTTS
+from polyvoice.backends import DummySTT, DummyLLM, DummyTTS, ContextLLM
 
-_pipe = PolyVoicePipeline(stt=DummySTT(), llm=DummyLLM(), tts=DummyTTS())
+
+def build_pipeline() -> PolyVoicePipeline:
+    """Fresh pipeline per connection: stateless STT/TTS may be shared, but
+    the brain (conversation memory) MUST be per-session, otherwise users
+    would see each other's turns."""
+    return PolyVoicePipeline(stt=DummySTT(), llm=ContextLLM(), tts=DummyTTS())
 
 if HAVE:
     @app.get("/health")
@@ -28,6 +33,7 @@ if HAVE:
     @app.websocket("/ws/speak")
     async def ws_speak(ws: WebSocket):
         await ws.accept()
+        pipe = build_pipeline()  # per-connection brain: no cross-user leaks
         buf = bytearray()
         try:
             while True:
@@ -38,7 +44,7 @@ if HAVE:
                     if len(buf) >= 16000 * 2 * 1.2:
                         wav = np.frombuffer(bytes(buf), dtype=np.int16).astype(np.float32) / 32768.0
                         buf.clear()
-                        async for ev in _pipe.stream_utterance(wav, 16000):
+                        async for ev in pipe.stream_utterance(wav, 16000):
                             if ev["type"] == "tts_chunk":
                                 a = np.asarray(ev["audio"], dtype=np.float32)
                                 await ws.send_bytes((np.clip(a, -1, 1) * 32767).astype(np.int16).tobytes())
@@ -48,7 +54,7 @@ if HAVE:
                     if buf:
                         wav = np.frombuffer(bytes(buf), dtype=np.int16).astype(np.float32) / 32768.0
                         buf.clear()
-                        async for ev in _pipe.stream_utterance(wav, 16000):
+                        async for ev in pipe.stream_utterance(wav, 16000):
                             if ev["type"] == "tts_chunk":
                                 a = np.asarray(ev["audio"], dtype=np.float32)
                                 await ws.send_bytes((np.clip(a, -1, 1) * 32767).astype(np.int16).tobytes())
