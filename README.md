@@ -42,13 +42,21 @@ audio.wav → preprocess → STT/LID → ContextLLM → TTS → reply.wav
 
 * **Ears** — `polyvoice/preprocess.py` (clean model-ready audio; the denoiser
   can no longer eat speech onsets) and `polyvoice/audio_understand.py`
-  (speech, question-like rise, energy, tempo).
+  (speech, question-like rise, energy, tempo). The noise gate is minute-grade:
+  per-band thresholds (voice band 300–3400Hz gated gently, rumble/hiss
+  strongly), 2048-point FFT at 75% overlap, attack/release mask smoothing —
+  rumble/hiss cut ~65% with the voice band preserved. It serves the
+  transcription path only; verdicts always judge raw audio.
 * **Brain** — `polyvoice/backends.py:ContextLLM`: greeting/how-are-you/weather/
   name/help/thanks/bye/time/question/statement + silence/acoustic fallbacks,
   per-session memory, replies in en/hi/bn/fr/es/zh/ar (incl. Devanagari and
-  Bengali-script keywords). `FasterWhisperSTT` carries a script-consistency
-  guard: a `bn` vote with zero Bengali characters and plain English words is
-  corrected to English instead of misrouting the reply.
+  Bengali-script keywords). Deploy-safe: bounded memory window (last 20 turns,
+  monotonic counter), user quotes sanitized and blocklisted before any echo,
+  and `server.py` builds a fresh pipeline per connection (no cross-user
+  history leaks). Open-ended generation via local Qwen (`HybridLLM`) is built
+  but parked — rule replies stay the default. `FasterWhisperSTT` carries a
+  script-consistency guard: a `bn` vote with zero Bengali characters and
+  plain English words is corrected to English instead of misrouting the reply.
 * **Mouth** — `polyvoice/backends.py:PiperTTS`: offline neural voices
   (`voices/`, ~60MB each, downloaded once) with trained-voice fallback.
 * **Trained voice** — `polyvoice/universal.py` (any-language adapters, zero-shot
@@ -86,8 +94,9 @@ median scoring, and condition reporting. `--deep` (wav2vec2 detector) and
 (1.0%), Bengali humans are muffled studio (0.6%) — while all AI voices are
 bright and full-band. One global boundary must believe "bright = human" and
 "bright = AI" simultaneously: a logical contradiction. Splitting by language
-resolved it — Hindi held-out **98.3%**, Bengali **93.9%**, French refit AI
-recall 55% → **72%**.
+resolved it — Hindi held-out **98.3%**, Bengali **93.9%**, English 89.4%,
+Spanish **90%**, French refit AI recall 55% → **72%**. Auto language
+detection routes each file to its model (shaky LID falls back to shared).
 
 **Measured results.**
 
@@ -109,8 +118,8 @@ clipped/music/silence checks wired into fetchers).
 **Known frontier (measured, not guessed):** very short clips (<4s, human and
 AI provably overlap — best line only 70%), Spanish davefx voice (no
 measurable traces in 19 statistics or two deep models), 0dB-drowned audio
-(no voice left to judge). Chinese/Arabic detectors pending data source
-recovery (archive.org 500s, FLEURS rate limits).
+(no voice left to judge). Arabic human data landed (250 LibriVox clips);
+Arabic detector trains next. Chinese was removed (only corrupt sources found).
 
 Test suites (all runnable): `test_all_scenarios.py` (21),
 `test_big_eval.py` (67), `test_random_eval.py` + `test_random_v2.py` (49),
